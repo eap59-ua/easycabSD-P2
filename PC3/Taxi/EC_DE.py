@@ -36,6 +36,7 @@ class DigitalEngine:
         # Nuevos atributos para manejar el servicio
         self.client_id = None
         self.final_destination = None
+        self.auth_token = None  # Para almacenar el token
         
 
 
@@ -49,57 +50,81 @@ class DigitalEngine:
         self.logger.info(f"Servidor de sensores iniciado en puerto {self.sensor_port}")
         
     def authenticate_with_central(self):
-        """Autenticación inicial con la central mediante sockets"""
+        """Autenticación inicial con la central mediante sockets seguros"""
         while not self.is_authenticated:
             try:
+                # Crear contexto SSL
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.load_verify_locations("shared/security/certificates/server.crt")
+                # Crear socket base
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    # Configurar timeout para la conexión
                     sock.settimeout(5.0)
                     self.logger.info(f"Intentando conectar a {self.central_ip}:{self.central_port}")
                     
-                    # Intentar conexión
-                    sock.connect((self.central_ip, self.central_port))
-                    self.logger.info("Conexión establecida")
-                    
-                    # Preparar y enviar mensaje de autenticación
-                    auth_message = {
-                        "type": "auth",
-                        "taxi_id": self.taxi_id,
-                        "position": self.position
-                    }
-                    message_str = json.dumps(auth_message)
-                    self.logger.debug(f"Enviando mensaje: {message_str}")
-                    sock.send(message_str.encode())
-                    
-                    # Recibir respuesta con timeout
-                    data = sock.recv(1024)
-                    if not data:
-                        self.logger.error("No se recibieron datos del servidor")
-                        time.sleep(2)
-                        continue
-                    
-                    # Procesar respuesta
-                    try:
-                        response = json.loads(data.decode())
-                        self.logger.debug(f"Respuesta recibida: {response}")
+                    # Envolver el socket con SSL
+                    with context.wrap_socket(sock, server_hostname=self.central_ip) as ssl_sock:
+                        # Conectar con el socket seguro
+                        ssl_sock.connect((self.central_ip, self.central_port))
+                        self.logger.info("Conexión SSL establecida")
                         
-                        if response.get("status") == "OK":
-                            self.is_authenticated = True
-                            self.state = "disponible"
-                            restored = response.get("restore", False)
-                            if restored:
-                                self.logger.info("Reconexión exitosa, esperando restauración de servicio")
-                            return True
-                        else:
-                            self.logger.error(f"Autenticación rechazada: {response}")
+                        # Preparar mensaje de autenticación
+                        auth_message = {
+                            "type": "auth",
+                            "taxi_id": self.taxi_id,
+                            "position": self.position,
+                            "credentials": {
+                                "cert_id": "taxi_cert_1",  # Identificador del certificado
+                                "timestamp": int(time.time())
+                            }
+                        }
+                        
+                        # Enviar mensaje cifrado
+                        message_str = json.dumps(auth_message)
+                        ssl_sock.send(message_str.encode())
+                        
+                        # Recibir respuesta cifrada
+                        data = ssl_sock.recv(1024)
+                        if not data:
+                            self.logger.error("No se recibieron datos del servidor")
                             time.sleep(2)
-                    except json.JSONDecodeError as e:
-                        self.logger.error(f"Error decodificando respuesta JSON: {e}")
-                        self.logger.debug(f"Datos recibidos: {data}")
-                        time.sleep(2)
+                            continue
                         
+                        # Procesar respuesta
+                        try:
+                            response = json.loads(data.decode())
+                            self.logger.debug(f"Respuesta recibida: {response}")
+                            
+                            if response.get("status") == "OK":
+                                # Guardar el token recibido
+                                self.auth_token = response.get("token")
+                                if not self.auth_token:
+                                    self.logger.error("No se recibió token de autenticación")
+                                    time.sleep(2)
+                                    continue
+                                    
+                                self.is_authenticated = True
+                                self.state = "disponible"
+                                restored = response.get("restore", False)
+                                
+                                if restored:
+                                    self.logger.info("Reconexión exitosa con nuevo token de seguridad")
+                                else:
+                                    self.logger.info("Autenticación exitosa, token recibido")
+                                return True
+                            else:
+                                self.logger.error(f"Autenticación rechazada: {response}")
+                                time.sleep(2)
+                                
+                        except json.JSONDecodeError as e:
+                            self.logger.error(f"Error decodificando respuesta JSON: {e}")
+                            self.logger.debug(f"Datos recibidos: {data}")
+                            time.sleep(2)
+                            
+            except ssl.SSLError as e:
+                self.logger.error(f"Error SSL: {e}")
+                time.sleep(2)
             except socket.timeout:
-                self.logger.error("Timeout en la conexión con la central")
+                self.logger.error("Timeout en la conexión SSL")
                 time.sleep(2)
             except ConnectionRefusedError:
                 self.logger.error(f"Conexión rechazada por {self.central_ip}:{self.central_port}")
@@ -107,7 +132,7 @@ class DigitalEngine:
             except Exception as e:
                 self.logger.error(f"Error en autenticación: {e}")
                 time.sleep(2)
-        
+                
         return False
             
     def setup_kafka(self):
@@ -177,8 +202,7 @@ class DigitalEngine:
             self.send_status_update("resumed_by_sensor")
             
     def send_status_update(self, update_type):
-        """Enviar actualización de estado a la central via Kafka"""
-        if not self.is_authenticated:
+        if not self.is_authenticated or not self.auth_token:
             return
             
         message = {
@@ -186,7 +210,8 @@ class DigitalEngine:
             "taxi_id": self.taxi_id,
             "position": self.position,
             "state": self.state,
-            "esta_parado": self.esta_parado  # Añadido esta_parado
+            "esta_parado": self.esta_parado,
+            "token": self.auth_token  # Añadir token a cada mensaje
         }
         
         self.producer.send('taxi_status', value=message)

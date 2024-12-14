@@ -25,7 +25,43 @@ class DatabaseManager:
         
     def get_connection(self):
         return psycopg2.connect(**self.db_params)
-    
+    # verificar el token de auth_service.py 
+    def verify_token(self, taxi_id, token):
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT token FROM taxi_tokens 
+                    WHERE taxi_id = %s AND token = %s
+                    AND NOT expired
+                """, (taxi_id, token))
+                return cursor.fetchone() is not None
+    def log_audit_event(self, source, source_id, ip_address, event_type, action, details):
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO audit_log 
+                        (source, source_id, ip_address, event_type, action, details)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (source, source_id, ip_address, event_type, action, details))
+                    conn.commit()
+                    self.logger.debug(f"Evento de auditoría registrado: {action}")
+        except Exception as e:
+            self.logger.error(f"Error registrando evento de auditoría: {e}")
+    def invalidate_taxi_token(self, taxi_id):
+        """Invalidar token cuando el taxi vuelve a base"""
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Marcar token como expirado
+                cursor.execute("""
+                    UPDATE taxis 
+                    SET token = NULL, 
+                        estado = 'no_disponible'
+                    WHERE id = %s
+                """, (taxi_id,))
+                conn.commit()
+
+
     def get_taxi_by_client(self, client_id):
         """Obtener información del taxi que tiene asignado un cliente específico"""
         with self.get_connection() as conn:

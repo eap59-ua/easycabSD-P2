@@ -8,6 +8,10 @@ import argparse
 import socket
 import threading
 import time
+import ssl
+import jwt
+from datetime import datetime
+
 
 # Constantes ajustadas
 TILE_SIZE = 35  # Aumentado de 30 a 35
@@ -83,6 +87,9 @@ class CentralSystem:
         self.selected_input = None  # Para saber qué input está activo ('taxi_id' o 'destination')
         self.taxi_id_input = ""     # Texto del input de taxi ID
         self.destination_input = "" # Texto del input de destino
+        #Cifrado SSL: la secret key es un string random
+        self.secret_key = "EasyCab2024SecureKey"  # O cualquier string aleatorio complejo
+        self.ssl_context = self.setup_ssl()
 
         
     def setup_socket_server(self):
@@ -97,6 +104,7 @@ class CentralSystem:
         auth_thread = threading.Thread(target=self.handle_auth_connections)
         auth_thread.daemon = True
         auth_thread.start()
+
     def cleanup(self):
         """Liberar recursos sin afectar la resiliencia"""
         if not hasattr(self, '_cleanup_called'):
@@ -134,7 +142,17 @@ class CentralSystem:
             self.logger.error(f"Error cargando locations: {e}")
             raise
     
-
+    def process_command(self, command):
+        """Procesar comandos de taxis"""
+        if command.get('type') == 'return_to_base':
+            taxi_id = command.get('taxi_id')
+            # Invalidar token
+            self.db.invalidate_taxi_token(taxi_id)
+            # Enviar comando de vuelta a base
+            self.send_taxi_order(taxi_id, {
+                'type': 'return_to_base',
+                'destination': [1, 1]
+            })
     def setup_kafka(self):
         """Configurar productores y consumidores de Kafka"""
         self.producer = KafkaProducer(
@@ -161,57 +179,98 @@ class CentralSystem:
             group_id='central_taxi_group',
             value_deserializer=lambda x: json.loads(x.decode('utf-8'))
         )
-    def handle_auth_connections(self):
-        """Manejar conexiones entrantes para autenticación de taxis"""
-        # Flag para control de ejecución
-        self.running = True
+    def setup_ssl(self):
+        """Configurar contexto SSL para el servidor"""
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(
+            certfile="shared/security/certificates/server.crt",
+            keyfile="shared/security/certificates/server.key"
+        )
+        return context
+
+    def setup_socket_server(self):
+        """Inicializar servidor socket seguro para autenticación"""
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind(('0.0.0.0', self.listen_port))
+        self.server_socket.listen(5)
+
+
+    def verify_taxi_message(self, message):
+        taxi_id = message.get('taxi_id')
+        token = message.get('token')
         
-        while self.running:
+        if not token:
+            self.logger.warning(f"Mensaje sin token del taxi {taxi_id}")
+            return False
+            
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=["HS256"])
+            if payload["taxi_id"] != taxi_id:
+                self.logger.warning(f"Token no coincide con taxi_id {taxi_id}")
+                return False
+            return True
+        except jwt.ExpiredSignatureError:
+            self.logger.warning(f"Token expirado para taxi {taxi_id}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error verificando token: {e}")
+            return False
+        
+    def verify_taxi_token(self, taxi_id, token):
+        """Verificar validez del token de un taxi"""
+        if not token:
+            return False
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=["HS256"])
+            return payload["taxi_id"] == taxi_id
+        except jwt.ExpiredSignatureError:
+            return False
+        except Exception as e:
+            self.logger.error(f"Error verificando token: {e}")
+            return False
+        
+    def handle_auth_connections(self):
+        """Manejar conexiones entrantes para autenticación"""
+        while True:
             try:
-                # Configurar timeout para el accept
-                self.server_socket.settimeout(1.0)
+                client_socket, addr = self.server_socket.accept()
+                # Envolver el socket con SSL
+                ssl_socket = self.ssl_context.wrap_socket(
+                    client_socket, server_side=True)
+                
+                self.logger.info(f"Nueva conexión SSL desde {addr}")
+                
                 try:
-                    client_socket, addr = self.server_socket.accept()
-                    self.logger.info(f"Nueva conexión desde {addr}")
+                    data = ssl_socket.recv(1024)
+                    if not data:
+                        continue
+
+                    message = json.loads(data.decode())
                     
-                    # Configurar timeout para recepción
-                    client_socket.settimeout(5.0)
-                    
-                    try:
-                        data = client_socket.recv(1024)
-                        if not data:
-                            self.logger.warning("Conexión cerrada por el cliente")
-                            continue
+                    if message.get('type') == 'auth':
+                        response = self.handle_taxi_auth(message)
+                        # Añadir token a la respuesta si la autenticación es exitosa
+                        if response.get('status') == 'OK':
+                            token = jwt.encode(
+                                {
+                                    'taxi_id': message.get('taxi_id'),
+                                    'exp': datetime.utcnow() + timedelta(hours=1)
+                                },
+                                self.secret_key,
+                                algorithm='HS256'
+                            )
+                            response['token'] = token
                             
-                        message = json.loads(data.decode())
+                        ssl_socket.send(json.dumps(response).encode())
                         
-                        if message.get('type') == 'auth':
-                            response = self.handle_taxi_auth(message)
-                            client_socket.send(json.dumps(response).encode())
-                            self.logger.info(f"Autenticación procesada para taxi {message.get('taxi_id')}")
-                    except json.JSONDecodeError:
-                        self.logger.error("Error decodificando mensaje JSON")
-                    except socket.timeout:
-                        self.logger.error("Timeout en la recepción de datos")
-                    except Exception as e:
-                        self.logger.error(f"Error procesando conexión: {e}")
-                    finally:
-                        client_socket.close()
-                        
-                except socket.timeout:
-                    # Timeout normal del accept, continuamos el loop
-                    continue
                 except Exception as e:
-                    if self.running:  # Solo logear si aún estamos ejecutando
-                        self.logger.error(f"Error aceptando conexión: {e}")
-                    continue
+                    self.logger.error(f"Error procesando conexión: {e}")
+                finally:
+                    ssl_socket.close()
                     
             except Exception as e:
-                if self.running:  # Solo logear si aún estamos ejecutando
-                    self.logger.error(f"Error crítico en el servidor de autenticación: {e}")
-                break
-
-        self.logger.info("Servidor de autenticación finalizado")
+                self.logger.error(f"Error en conexión SSL: {e}")
     # En EC_Central.py
     def handle_taxi_auth(self, message):
         """Manejar autenticación de taxi"""
@@ -394,47 +453,66 @@ class CentralSystem:
 
     def handle_taxi_status(self, message):
         """Manejar actualizaciones de estado de los taxis"""
+        # Primero verificar el mensaje completo
+        if not self.verify_taxi_message(message):
+            self.logger.warning("Mensaje rechazado por fallo en verificación")
+            return
+
         try:
             taxi_id = message.get('taxi_id')
             message_type = message.get('type')
+            position = message.get('position')
+            state = message.get('state')
+            is_parado = message.get('esta_parado', True)
+
+            # Logging de auditoría para cada mensaje recibido
+            self.logger.info(f"Mensaje recibido de taxi {taxi_id}: tipo={message_type}, posición={position}")
 
             # Si es mensaje de desconexión
             if message_type == 'disconnect':
                 self.handle_taxi_disconnect(taxi_id)
                 return
 
-            position = message.get('position')
-            state = message.get('state')
-            is_parado = message.get('esta_parado', True)
+            # Verificar llegada a base y gestionar token
+            if position == [1, 1]:
+                self.db.invalidate_taxi_token(taxi_id)
+                self.logger.info(f"Token invalidado para taxi {taxi_id} en base")
+                # Notificar al taxi que debe reautenticarse
+                self.send_taxi_order(taxi_id, {
+                    'type': 'reauth_required',
+                    'message': 'Token invalidado por llegada a base'
+                })
 
             # Actualizar posición y estado en BD
             self.db.actualizar_posicion_taxi(
-                taxi_id=taxi_id, 
-                x=position[0], 
-                y=position[1], 
+                taxi_id=taxi_id,
+                x=position[0],
+                y=position[1],
                 estado=state,
                 esta_parado=is_parado
             )
 
-            # Si el taxi llegó a su destino final
+            # Procesar eventos específicos
             if message_type == 'arrived':
                 self.notify_customer_service_completed(taxi_id)
-            
-            # Si el taxi recogió al cliente
             elif message_type == 'passenger_picked':
-                self.logger.info(f"Taxi {taxi_id} ha recogido al cliente")
                 client_id = self.active_taxis.get(taxi_id)
                 if client_id in self.active_clients:
-                    self.logger.info(f"Actualizando estado del cliente {client_id} a picked_up")
-                    self.active_clients[client_id]['status'] = 'picked_up'
-                    # Actualizar la posición del cliente a la del taxi
-                    self.active_clients[client_id]['position'] = position
-                    # Registrar el cambio de estado
-                    self.logger.debug(f"Estado del cliente {client_id} actualizado: {self.active_clients[client_id]}")
+                    self.logger.info(f"Taxi {taxi_id} ha recogido al cliente {client_id}")
+                    self.active_clients[client_id].update({
+                        'status': 'picked_up',
+                        'position': position
+                    })
+                    self.logger.debug(f"Estado del cliente actualizado: {self.active_clients[client_id]}")
 
         except Exception as e:
-            self.logger.error(f"Error actualizando estado del taxi {taxi_id}: {e}")
-    
+            self.logger.error(f"Error procesando mensaje de taxi {taxi_id}: {e}")
+            # Registrar el error en el sistema de auditoría
+            self.db.log_audit_event(
+                event_type='error',
+                taxi_id=taxi_id,
+                details=str(e)
+            )    
     def is_client_picked_up(self, client_id):
         """Verificar si el cliente ya ha sido recogido por algún taxi"""
         for taxi_id, assigned_client in self.active_taxis.items():
