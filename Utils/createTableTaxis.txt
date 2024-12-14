@@ -1,0 +1,49 @@
+-- Primero hacemos backup de los datos importantes si existen
+CREATE TEMP TABLE taxi_backup AS 
+SELECT id, coord_x, coord_y, dest_x, dest_y 
+FROM taxis;
+
+-- Eliminamos la tabla actual
+DROP TABLE IF EXISTS taxis;
+
+-- Creamos la nueva estructura
+CREATE TABLE taxis (
+    id INTEGER PRIMARY KEY,
+    estado VARCHAR(20) CHECK (estado IN (
+        'no_disponible',    -- No autenticado
+        'disponible',       -- Autenticado
+        'en_movimiento'     -- En servicio con cliente
+    )),
+    esta_parado BOOLEAN DEFAULT true,  -- true = ROJO, false = VERDE
+    coord_x INTEGER,
+    coord_y INTEGER,
+    dest_x INTEGER,
+    dest_y INTEGER,
+    cliente_asignado VARCHAR(1) DEFAULT NULL  -- Para mantener la asignación cliente-taxi
+);
+
+-- Restauramos los datos básicos
+INSERT INTO taxis (id, coord_x, coord_y, dest_x, dest_y, estado, esta_parado)
+SELECT 
+    id, 
+    coord_x, 
+    coord_y, 
+    dest_x, 
+    dest_y,
+    'no_disponible' as estado,  -- Estado inicial
+    true as esta_parado         -- Inicialmente parado
+FROM taxi_backup;
+select * from taxis;
+-- Si no había datos previos, insertar algunos taxis de prueba
+INSERT INTO taxis (id, estado, esta_parado, coord_x, coord_y)
+SELECT 
+    generate_series(1,3),      -- IDs 1,2,3
+    'no_disponible',           -- Estado inicial
+    true,                      -- Inicialmente parado
+    1,                         -- Posición inicial X
+    1                         -- Posición inicial Y
+WHERE NOT EXISTS (SELECT 1 FROM taxis);
+
+-- Añadir índices útiles
+CREATE INDEX idx_taxi_estado ON taxis(estado);
+CREATE INDEX idx_taxi_parado ON taxis(esta_parado);
