@@ -1,0 +1,11 @@
+body {
+    font-family: Arial, sans-serif;
+}
+
+#map-container {
+    margin-top: 20px;
+}
+
+.cell {
+    border: 1px solid #ccc;
+}
