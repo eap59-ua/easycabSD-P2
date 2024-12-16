@@ -11,7 +11,8 @@ import time
 import ssl
 import jwt
 from datetime import datetime
-
+import requests
+import threading 
 
 # Constantes ajustadas
 TILE_SIZE = 35  # Aumentado de 30 a 35
@@ -91,6 +92,12 @@ class CentralSystem:
         self.secret_key = "EasyCab2024SecureKey"  # O cualquier string aleatorio complejo
         self.ssl_context = self.setup_ssl()
 
+        #Hilo para consultar a EC_CTC
+        self.traffic_status=True
+        self.running=True
+        traffic_thread=threading.Thread(target=self.check_traffic)
+        traffic_thread.daemon=True
+        traffic_thread.start()
         
     def setup_socket_server(self):
         """Inicializar servidor socket para autenticación de taxis"""
@@ -1217,6 +1224,47 @@ class CentralSystem:
         # Guardar las rect de los inputs para detectar clicks
         self.taxi_input_rect = taxi_input_rect
         self.dest_input_rect = dest_input_rect
+
+    def order_all_taxis_to_base(self):
+        try:
+            taxis = self.db.obtener_taxis()
+            for taxi in taxis:
+                taxi_id = taxi['id']
+                order = {
+                    'type': 'return_to_base',
+                    'taxi_id': taxi_id,
+                    'destination': [1, 1]
+                }
+                self.send_taxi_order(taxi_id, order)
+                # Invalidate token if any
+                if taxi_id in self.taxi_tokens:
+                    del self.taxi_tokens[taxi_id]
+            
+            self.logger.info("Todos los taxis han sido enviados a la base (order_all_taxis_to_base)")
+        except Exception as e:
+            self.logger.error(f"Error enviando a todos los taxis a la base: {e}")
+
+    def check_traffic(self):
+        while self.running:
+            try:
+                response = requests.get("http://ip_del_CTC:5001/traffic", timeout=5)
+                if response.status_code == 200:
+                    status = response.text.strip()
+                    self.traffic_status = (status == "OK")
+                    if not self.traffic_status:
+                        #Ordenar a todos los taxis volver a base e invalidar tokens
+                        self.order_all_taxis_to_base()
+                else:
+                    #Si no hay respuesta, asumir KO
+                    self.traffic_status = False
+                    self.order_all_taxis_to_base()
+            except:
+                #Error de conexión, asumir KO
+                self.traffic_status = False
+                self.order_all_taxis_to_base()
+
+            time.sleep(10)
+
 def main():
     parser = argparse.ArgumentParser(description='EasyCab Central Server')
     parser.add_argument('listen_port', type=int, help='Puerto de escucha')
