@@ -25,6 +25,34 @@ class DatabaseManager:
         
     def get_connection(self):
         return psycopg2.connect(**self.db_params)
+    
+    # En DatabaseManager (map_reader.py)
+    def verify_taxi_cert_token(self, taxi_id, cert_token):
+        """Verificar token de certificación del taxi"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT token, expired 
+                        FROM taxi_tokens 
+                        WHERE taxi_id = %s 
+                        AND token = %s
+                    """, (taxi_id, cert_token))
+                    
+                    result = cursor.fetchone()
+                    if result and not result['expired']:
+                        # Actualizar último uso
+                        cursor.execute("""
+                            UPDATE taxi_tokens 
+                            SET last_used = NOW() 
+                            WHERE taxi_id = %s
+                        """, (taxi_id,))
+                        conn.commit()
+                        return True
+                    return False
+        except Exception as e:
+            self.logger.error(f"Error verificando cert_token: {e}")
+            return False
     # verificar el token de auth_service.py 
     def verify_token(self, taxi_id, token):
         with self.get_connection() as conn:
@@ -293,3 +321,63 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error restaurando estado del taxi {taxi_id}: {e}")
             raise
+
+    def register_taxi(self, taxi_id, cert_token, ip_address):
+        """Registrar un nuevo taxi"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Verificar si el taxi ya existe
+                    cursor.execute("""
+                        SELECT id FROM taxis WHERE id = %s
+                    """, (taxi_id,))
+                    
+                    if cursor.fetchone() is None:
+                        # Crear nuevo taxi
+                        cursor.execute("""
+                            INSERT INTO taxis (id, estado, esta_parado, coord_x, coord_y)
+                            VALUES (%s, 'no_disponible', true, 1, 1)
+                        """, (taxi_id,))
+                    
+                    # Registrar el token
+                    cursor.execute("""
+                        INSERT INTO taxi_tokens (taxi_id, token, ip_address)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (taxi_id) 
+                        DO UPDATE SET token = EXCLUDED.token,
+                                    ip_address = EXCLUDED.ip_address,
+                                    last_used = NOW(),
+                                    expired = false
+                    """, (taxi_id, cert_token, ip_address))
+                    
+                    conn.commit()
+                    return True
+        except Exception as e:
+            self.logger.error(f"Error en register_taxi: {e}")
+            return False
+
+    def unregister_taxi(self, taxi_id):
+        """Dar de baja un taxi"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Actualizar estado del taxi
+                    cursor.execute("""
+                        UPDATE taxis 
+                        SET estado = 'no_disponible',
+                            esta_parado = true
+                        WHERE id = %s
+                    """, (taxi_id,))
+                    
+                    # Invalidar tokens
+                    cursor.execute("""
+                        UPDATE taxi_tokens 
+                        SET expired = true 
+                        WHERE taxi_id = %s
+                    """, (taxi_id,))
+                    
+                    conn.commit()
+                    return True
+        except Exception as e:
+            self.logger.error(f"Error en unregister_taxi: {e}")
+            return False
