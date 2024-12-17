@@ -7,6 +7,9 @@ import logging
 from kafka import KafkaConsumer, KafkaProducer
 import time
 import ssl
+from datetime import datetime, timedelta
+import requests
+import secrets
 
 class DigitalEngine:
     def __init__(self, central_ip, central_port, kafka_broker, sensor_port, taxi_id):
@@ -38,10 +41,49 @@ class DigitalEngine:
         self.client_id = None
         self.final_destination = None
         self.auth_token = None  # Para almacenar el token
+        self.ssl_context = self.setup_ssl()  # Inicializar contexto SSL
         
+    def register_with_registry(self):
+        """Registrarse con el Registry de forma segura"""
+        try:
+            headers = {
+                'X-Taxi-Auth': 'Basic ' + secrets.token_hex(16),
+                'Content-Type': 'application/json'
+            }
+            
+            cert_data = {
+                'signature': secrets.token_hex(32),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            data = {
+                'taxi_id': self.taxi_id,
+                'cert_data': cert_data
+            }
+            
+            # Usar sesión HTTPS con verificación de certificado
+            with requests.Session() as session:
+                session.verify = "shared/security/certificates/server.crt"
+                response = session.post(
+                    'https://localhost:5000/registry/taxi',
+                    headers=headers,
+                    json=data
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    self.cert_token = result['cert_token']
+                    self.logger.info("Registro exitoso con Registry")
+                    return True
+                else:
+                    self.logger.error(f"Error en registro: {response.text}")
+                    return False
+                    
+        except Exception as e:
+            self.logger.error(f"Error conectando con Registry: {e}")
+            return False
 
-
-
+    
         
     def setup_sensor_server(self):
         """Inicializar servidor socket para sensores"""
@@ -150,7 +192,14 @@ class DigitalEngine:
             auto_offset_reset='earliest',
             value_deserializer=lambda x: json.loads(x.decode('utf-8'))
         )
-        
+    def setup_ssl_context(self):
+        """Configurar contexto SSL para el cliente"""
+        context = ssl.create_default_context()
+        context.load_verify_locations("shared/security/certificates/server.crt")
+        return context
+    
+
+
     def handle_sensors(self):
         """Manejar conexiones de sensores"""
         while True:
