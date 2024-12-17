@@ -6,6 +6,7 @@ import threading
 import logging
 from kafka import KafkaConsumer, KafkaProducer
 import time
+import ssl
 
 class DigitalEngine:
     def __init__(self, central_ip, central_port, kafka_broker, sensor_port, taxi_id):
@@ -55,7 +56,7 @@ class DigitalEngine:
             try:
                 # Crear contexto SSL
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                context.load_verify_locations("shared/security/certificates/server.crt")
+                context.load_verify_locations("../../shared/security/certificates/server.crt")
                 # Crear socket base
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                     sock.settimeout(5.0)
