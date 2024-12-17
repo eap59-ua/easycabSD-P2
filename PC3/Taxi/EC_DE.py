@@ -10,6 +10,10 @@ import ssl
 from datetime import datetime, timedelta
 import requests
 import secrets
+import os
+from urllib3.exceptions import InsecureRequestWarning
+
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 class DigitalEngine:
     def __init__(self, central_ip, central_port, kafka_broker, sensor_port, taxi_id):
@@ -41,33 +45,28 @@ class DigitalEngine:
         self.client_id = None
         self.final_destination = None
         self.auth_token = None  # Para almacenar el token
-        self.ssl_context = self.setup_ssl()  # Inicializar contexto SSL
-        
+        self.ssl_context = self.setup_ssl()  # Cambiar a setup_ssl_context
+        self.cert_token=None
+
+
     def register_with_registry(self):
-        """Registrarse con el Registry de forma segura"""
-        try:
-            headers = {
-                'X-Taxi-Auth': 'Basic ' + secrets.token_hex(16),
-                'Content-Type': 'application/json'
-            }
-            
-            cert_data = {
-                'signature': secrets.token_hex(32),
-                'timestamp': datetime.utcnow().isoformat()
-            }
-            
-            data = {
-                'taxi_id': self.taxi_id,
-                'cert_data': cert_data
-            }
-            
-            # Usar sesión HTTPS con verificación de certificado
-            with requests.Session() as session:
-                session.verify = "shared/security/certificates/server.crt"
-                response = session.post(
+            """Registrarse con el Registry primero"""
+            try:
+                headers = {
+                    'X-Taxi-Auth': 'Basic ' + secrets.token_hex(16),
+                    'Content-Type': 'application/json'
+                }
+                
+                data = {
+                    'taxi_id': self.taxi_id
+                }
+                
+                # Usar HTTPS sin verificar certificado (solo para desarrollo)
+                response = requests.post(
                     'https://localhost:5000/registry/taxi',
                     headers=headers,
-                    json=data
+                    json=data,
+                    verify=False  # Solo para desarrollo
                 )
                 
                 if response.status_code == 200:
@@ -79,9 +78,9 @@ class DigitalEngine:
                     self.logger.error(f"Error en registro: {response.text}")
                     return False
                     
-        except Exception as e:
-            self.logger.error(f"Error conectando con Registry: {e}")
-            return False
+            except Exception as e:
+                self.logger.error(f"Error conectando con Registry: {e}")
+                return False
 
     
         
@@ -96,36 +95,30 @@ class DigitalEngine:
         """Autenticación inicial con la central mediante sockets seguros"""
         while not self.is_authenticated:
             try:
-                # Crear contexto SSL
-                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                context.load_verify_locations("../../shared/security/certificates/server.crt")
-                # Crear socket base
+                context = self.ssl_context
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(5.0)
+                    sock.settimeout(10.0)
                     self.logger.info(f"Intentando conectar a {self.central_ip}:{self.central_port}")
                     
-                    # Envolver el socket con SSL
                     with context.wrap_socket(sock, server_hostname=self.central_ip) as ssl_sock:
-                        # Conectar con el socket seguro
+                        self.logger.debug("Socket seguro creado, intentando conectar...")
                         ssl_sock.connect((self.central_ip, self.central_port))
                         self.logger.info("Conexión SSL establecida")
                         
-                        # Preparar mensaje de autenticación
                         auth_message = {
                             "type": "auth",
                             "taxi_id": self.taxi_id,
                             "position": self.position,
+                            "cert_token": self.cert_token,  # Token del Registry
                             "credentials": {
-                                "cert_id": "taxi_cert_1",  # Identificador del certificado
+                                "cert_id": "taxi_cert_1",
                                 "timestamp": int(time.time())
                             }
                         }
                         
-                        # Enviar mensaje cifrado
                         message_str = json.dumps(auth_message)
                         ssl_sock.send(message_str.encode())
                         
-                        # Recibir respuesta cifrada
                         data = ssl_sock.recv(1024)
                         if not data:
                             self.logger.error("No se recibieron datos del servidor")
@@ -192,10 +185,24 @@ class DigitalEngine:
             auto_offset_reset='earliest',
             value_deserializer=lambda x: json.loads(x.decode('utf-8'))
         )
-    def setup_ssl_context(self):
+    def setup_ssl(self):
         """Configurar contexto SSL para el cliente"""
+        # Obtener el directorio del script actual
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Subir dos niveles para llegar a la raíz del proyecto
+        project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
+        cert_path = os.path.join(project_root, 'shared', 'security', 'certificates')
+        cert_file = os.path.join(cert_path, 'server.crt')
+        
+        # Verificar que el certificado existe
+        if not os.path.exists(cert_file):
+            self.logger.error(f"Certificado no encontrado en: {cert_file}")
+            raise FileNotFoundError(f"Certificado no encontrado en: {cert_file}")
+        
+        # Crear contexto SSL para cliente
         context = ssl.create_default_context()
-        context.load_verify_locations("shared/security/certificates/server.crt")
+        context.load_verify_locations(cert_file)
+        
         return context
     
 
@@ -409,7 +416,12 @@ class DigitalEngine:
             self.logger.error(f"Error procesando comando {command_type}: {e}")
             
     def run(self):
-        """Método principal del taxi"""
+        # Primero registrarse con Registry
+        if not self.register_with_registry():
+            self.logger.error("No se pudo registrar con Registry")
+            return
+            
+        # Luego autenticarse con Central
         if not self.authenticate_with_central():
             return
             

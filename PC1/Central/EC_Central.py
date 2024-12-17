@@ -10,7 +10,8 @@ import threading
 import time
 import ssl
 import jwt
-from datetime import datetime
+import os
+import datetime
 import requests
 import threading 
 
@@ -69,8 +70,10 @@ class CentralSystem:
         self.db = DatabaseManager(db_params)
         self.active_clients = {}  # {client_id: {position, status}}
         self.active_taxis = {}    # {taxi_id: client_id} - Para saber qué taxi sirve a qué cliente
-        
+        #para taxi_tokens:
+        self.taxi_tokens = {} 
         # Inicializar servidor socket para autenticación
+        self.ssl_context = self.setup_ssl()
         self.setup_socket_server()
         #lock para los threads
         self.taxis_lock = threading.Lock()
@@ -90,7 +93,7 @@ class CentralSystem:
         self.destination_input = "" # Texto del input de destino
         #Cifrado SSL: la secret key es un string random
         self.secret_key = "EasyCab2024SecureKey"  # O cualquier string aleatorio complejo
-        self.ssl_context = self.setup_ssl()
+        
 
         #Hilo para consultar a EC_CTC
         self.traffic_status=True
@@ -100,12 +103,19 @@ class CentralSystem:
         traffic_thread.start()
         
     def setup_socket_server(self):
-        """Inicializar servidor socket para autenticación de taxis"""
+        """Inicializar servidor socket seguro para autenticación"""
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Añadir esta línea ANTES del bind
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', self.listen_port))
-        self.server_socket.listen(5)
+        
+        # Envolver el socket con SSL antes del bind
+        self.ssl_server = self.ssl_context.wrap_socket(
+            self.server_socket, 
+            server_side=True
+        )
+        
+        self.ssl_server.bind(('0.0.0.0', self.listen_port))
+        self.ssl_server.listen(5)
+        self.logger.info(f"Servidor SSL escuchando en puerto {self.listen_port}")
         
         # Thread para manejar autenticaciones
         auth_thread = threading.Thread(target=self.handle_auth_connections)
@@ -188,19 +198,25 @@ class CentralSystem:
         )
     def setup_ssl(self):
         """Configurar contexto SSL para el servidor"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
+        cert_path = os.path.join(project_root, 'shared', 'security', 'certificates')
+        
+        cert_file = os.path.join(cert_path, 'server.crt')
+        key_file = os.path.join(cert_path, 'server.key')
+        
+        # Verificar que los archivos existen
+        if not os.path.exists(cert_file):
+            raise FileNotFoundError(f"Certificado no encontrado en: {cert_file}")
+        if not os.path.exists(key_file):
+            raise FileNotFoundError(f"Clave privada no encontrada en: {key_file}")
+        
         context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         context.load_cert_chain(
-            certfile="shared/security/certificates/server.crt",
-            keyfile="shared/security/certificates/server.key"
+            certfile=cert_file,
+            keyfile=key_file
         )
         return context
-
-    def setup_socket_server(self):
-        """Inicializar servidor socket seguro para autenticación"""
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', self.listen_port))
-        self.server_socket.listen(5)
 
 
     def verify_taxi_message(self, message):
@@ -236,48 +252,33 @@ class CentralSystem:
         except Exception as e:
             self.logger.error(f"Error verificando token: {e}")
             return False
-        
     def handle_auth_connections(self):
-        """Manejar conexiones entrantes para autenticación"""
         while True:
             try:
-                client_socket, addr = self.server_socket.accept()
-                # Envolver el socket con SSL
-                ssl_socket = self.ssl_context.wrap_socket(
-                    client_socket, server_side=True)
-                
-                self.logger.info(f"Nueva conexión SSL desde {addr}")
-                
+                self.logger.info("Esperando conexiones entrantes...")
+                client_socket, addr = self.ssl_server.accept()  
+                self.logger.info(f"Nueva conexión desde {addr}")
                 try:
-                    data = ssl_socket.recv(1024)
+                    self.logger.info("Iniciando handshake SSL...")
+                    data = client_socket.recv(1024)
                     if not data:
+                        self.logger.warning("No se recibieron datos")
                         continue
 
+                    self.logger.info(f"Datos recibidos: {data}")
                     message = json.loads(data.decode())
-                    
                     if message.get('type') == 'auth':
                         response = self.handle_taxi_auth(message)
-                        # Añadir token a la respuesta si la autenticación es exitosa
-                        if response.get('status') == 'OK':
-                            token = jwt.encode(
-                                {
-                                    'taxi_id': message.get('taxi_id'),
-                                    'exp': datetime.utcnow() + timedelta(hours=1)
-                                },
-                                self.secret_key,
-                                algorithm='HS256'
-                            )
-                            response['token'] = token
-                            
-                        ssl_socket.send(json.dumps(response).encode())
+                        self.logger.info(f"Enviando respuesta: {response}")
+                        client_socket.send(json.dumps(response).encode())
                         
                 except Exception as e:
-                    self.logger.error(f"Error procesando conexión: {e}")
+                    self.logger.error(f"Error procesando conexión: {e}", exc_info=True)
                 finally:
-                    ssl_socket.close()
+                    client_socket.close()
                     
             except Exception as e:
-                self.logger.error(f"Error en conexión SSL: {e}")
+                self.logger.error(f"Error en conexión SSL: {e}", exc_info=True)
     # En EC_Central.py
     def handle_taxi_auth(self, message):
         """Manejar autenticación de taxi"""
@@ -321,26 +322,36 @@ class CentralSystem:
                     if info['client_id']:
                         self.send_taxi_order(taxi_id, order)
                         self.logger.info(f"Orden de continuación enviada al taxi {taxi_id}")
-                        
-                    del self.disconnected_taxis[taxi_id]
-                    return {'status': 'OK', 'restore': True}
                     
+                    del self.disconnected_taxis[taxi_id]
+                    return {'status': 'OK', 'restore': True, 'token': self.generate_token(taxi_id)}
+                
                 except Exception as e:
                     self.logger.error(f"Error en reconexión del taxi {taxi_id}: {e}")
                     return {'status': 'ERROR'}
-
-            # Si no es reconexión, verificar si el taxi puede autenticarse
+            
+            # Si no es reconexión
             if self.db.verificar_taxi(taxi_id):
                 self.db.actualizar_taxi_autenticado(taxi_id, 1, 1)
+                token = self.generate_token(taxi_id)
                 self.logger.info(f"Nueva autenticación exitosa del taxi {taxi_id}")
-                return {'status': 'OK', 'restore': False}
+                return {'status': 'OK', 'restore': False, 'token': token}
             else:
                 self.logger.warning(f"Autenticación fallida para taxi {taxi_id}")
                 return {'status': 'ERROR'}
-                
+        
         except Exception as e:
             self.logger.error(f"Error en autenticación del taxi {taxi_id}: {e}")
             return {'status': 'ERROR'}
+        
+    # para generar token de autenciacion, de sesion, expirara en un tiempo
+    def generate_token(self, taxi_id):
+        """Generar un token JWT para el taxi"""
+        payload = {
+            'taxi_id': taxi_id,
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        }
+        return jwt.encode(payload, self.secret_key, algorithm='HS256')
     def mark_taxi_as_incident(self, taxi_id):
         """Marcar taxi como incidencia después de 10 segundos"""
         if taxi_id in self.disconnected_taxis:
@@ -1250,19 +1261,15 @@ class CentralSystem:
                 response = requests.get("http://ip_del_CTC:5001/traffic", timeout=5)
                 if response.status_code == 200:
                     status = response.text.strip()
+                    prev_status = self.traffic_status
                     self.traffic_status = (status == "OK")
-                    if not self.traffic_status:
-                        #Ordenar a todos los taxis volver a base e invalidar tokens
+                    # Solo enviar órdenes si el estado cambió a KO
+                    if prev_status and not self.traffic_status:
                         self.order_all_taxis_to_base()
                 else:
-                    #Si no hay respuesta, asumir KO
                     self.traffic_status = False
-                    self.order_all_taxis_to_base()
             except:
-                #Error de conexión, asumir KO
                 self.traffic_status = False
-                self.order_all_taxis_to_base()
-
             time.sleep(10)
 
 def main():

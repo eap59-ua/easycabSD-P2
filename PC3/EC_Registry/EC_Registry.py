@@ -29,17 +29,26 @@ class RegistryService:
         self.setup_routes()
 
     def setup_ssl(self):
-        """Configurar contexto SSL"""
-        try:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.load_cert_chain(
-                certfile="shared/security/certificates/server.crt",
-                keyfile="shared/security/certificates/server.key"
-            )
-            return context
-        except Exception as e:
-            self.logger.error(f"Error configurando SSL: {e}")
-            raise
+        """Configurar contexto SSL para el servidor"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
+        cert_path = os.path.join(project_root, 'shared', 'security', 'certificates')
+        
+        cert_file = os.path.join(cert_path, 'server.crt')
+        key_file = os.path.join(cert_path, 'server.key')
+        
+        # Verificar que los archivos existen
+        if not os.path.exists(cert_file):
+            raise FileNotFoundError(f"Certificado no encontrado en: {cert_file}")
+        if not os.path.exists(key_file):
+            raise FileNotFoundError(f"Clave privada no encontrada en: {key_file}")
+        
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(
+            certfile=cert_file,
+            keyfile=key_file
+        )
+        return context
 
     def setup_routes(self):
         @self.app.route('/registry/taxi', methods=['POST'])
