@@ -381,3 +381,81 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error en unregister_taxi: {e}")
             return False
+
+
+    #Métodos para gestionar los clientes en la base de datos
+    def insertar_cliente(self, client_id, coord_x, coord_y, destination_id=None):
+        """
+        Inserta un nuevo cliente en la BD con estado 'waiting' por defecto.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO clients (id, status, coord_x, coord_y, destination_id)
+                        VALUES (%s, 'waiting', %s, %s, %s)
+                    """, (client_id, coord_x, coord_y, destination_id))
+                    conn.commit()
+            self.logger.info(f"Cliente {client_id} insertado con estado 'waiting' en la BD.")
+        except Exception as e:
+            self.logger.error(f"Error insertando cliente {client_id}: {e}")
+            raise
+
+    def obtener_clientes(self):
+        """
+        Obtiene todos los clientes y sus datos.
+        Devuelve una lista de diccionarios: [{id, status, coord_x, coord_y, destination_id}, ...]
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=DictCursor) as cursor:
+                    cursor.execute("SELECT id, status, coord_x, coord_y, destination_id FROM clients;")
+                    clientes = cursor.fetchall()
+                    return clientes
+        except Exception as e:
+            self.logger.error(f"Error obteniendo clientes: {e}")
+            raise
+
+    def actualizar_estado_cliente(self, client_id, status, coord_x=None, coord_y=None, destination_id=None):
+        """
+        Actualiza el estado, posición  y destino de un cliente.
+        No se requiere siempre coord_x y coord_y: si no se pasan, el cliente mantiene las actuales.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    query = "UPDATE clients SET status = %s"
+                    params = [status]
+
+                    if coord_x is not None and coord_y is not None:
+                        query += ", coord_x = %s, coord_y = %s"
+                        params.extend([coord_x, coord_y])
+
+                    if destination_id is not None:
+                        query += ", destination_id = %s"
+                        params.append(destination_id)
+
+                    query += " WHERE id = %s"
+                    params.append(client_id)
+
+                    cursor.execute(query, params)
+                    conn.commit()
+            self.logger.info(f"Estado del cliente {client_id} actualizado a {status} con destino {destination_id}")
+        except Exception as e:
+            self.logger.error(f"Error actualizando estado del cliente {client_id}: {e}")
+            raise
+
+    def borrar_cliente(self, client_id):
+        """
+        Borra un cliente de la BD, por ejemplo cuando finaliza su viaje definitivamente
+        y no es necesario mantenerlo.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM clients WHERE id = %s", (client_id,))
+                    conn.commit()
+            self.logger.info(f"Cliente {client_id} eliminado de la BD.")
+        except Exception as e:
+            self.logger.error(f"Error eliminando cliente {client_id}: {e}")
+            raise

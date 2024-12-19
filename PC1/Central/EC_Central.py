@@ -412,6 +412,11 @@ class CentralSystem:
                 
                 # Finalmente eliminar el cliente de nuestro registro
                 del self.active_clients[client_id]
+                
+                self.db.borrar_cliente(
+                    client_id=client_id
+                )
+
                 return
 
         # Para solicitudes de servicio
@@ -427,6 +432,15 @@ class CentralSystem:
                     'status': 'waiting',
                     'destination_id': destination_id  # Importante guardar el destination_id
                 })
+
+                #Actualizar el estado y el destino del cliente en la base de datos
+                self.db.actualizar_estado_cliente(
+                    client_id=client_id,
+                    status='waiting',
+                    coord_x=current_position[0],
+                    coord_y=current_position[1],
+                    destination_id=destination_id
+                )
             else:
                 # Crear nuevo registro de cliente
                 self.active_clients[client_id] = {
@@ -435,6 +449,14 @@ class CentralSystem:
                     'status': 'waiting',
                     'destination_id': destination_id  # Importante guardar el destination_id
                 }
+
+                #Añadir también el cliente a la BD
+                self.db.insertar_cliente(
+                    client_id=client_id,
+                    coord_x=current_position[0],
+                    coord_y=current_position[1],
+                    destination_id=destination_id
+                )
             
             # Intentar asignar un taxi
             if self.assign_taxi_to_service(client_id, destination_id):
@@ -452,6 +474,7 @@ class CentralSystem:
 
             self.producer.send('customer_responses', value=response)
             self.producer.flush()
+    
     def is_taxi_with_client(self, taxi_id):
         """Determinar si el taxi ya recogió al cliente"""
         taxi = self.db.get_taxi_info(taxi_id)
@@ -521,6 +544,15 @@ class CentralSystem:
                         'status': 'picked_up',
                         'position': position
                     })
+
+                    #Actualizar el estado del cliente en la base de datos
+                    self.db.actualizar_estado_cliente(
+                        client_id=client_id,
+                        status='picked_up',
+                        coord_x=position[0],
+                        coord_y=position[1]
+                    )
+
                     self.logger.debug(f"Estado del cliente actualizado: {self.active_clients[client_id]}")
 
         except Exception as e:
@@ -741,6 +773,13 @@ class CentralSystem:
             if client_id in self.active_clients:
                 self.active_clients[client_id]['position'] = [taxi_info['coord_x'], taxi_info['coord_y']]
             
+            self.db.actualizar_estado_cliente(
+                client_id=client_id,
+                status='finished',
+                coord_x=taxi_info['coord_x'],
+                coord_y=taxi_info['coord_y'],
+            )
+
             self.logger.info(f"Servicio completado para cliente {client_id}")
     def handle_mouse_click(self, pos):
         """Manejar clicks del mouse"""
