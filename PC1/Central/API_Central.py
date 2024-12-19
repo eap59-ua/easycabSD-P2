@@ -1,17 +1,50 @@
 from flask import Flask, jsonify
+from map_reader import DatabaseManager, get_db_params
+import logging
 
-def create_api(central):
-    app = Flask(__name__)
+app = Flask(__name__)
 
-    @app.route('/status', methods=['GET'])
-    def get_status():
-        taxis = central.db.obtener_taxis()
-        clients = central.active_clients
-        traffic = "OK" if getattr(central, 'traffic_status', True) else "KO"
-        return jsonify({"taxis": [dict(t) for t in taxis], "clients": clients, "traffic": traffic})
+# Inicializar conexión a BD
+db_params = get_db_params()
+db = DatabaseManager(db_params)
 
-    return app
+# Configurar logging
+logger = logging.getLogger('api_central')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
-# Luego desde main o desde EC_Central:
-# api_app = create_api(central)
-# api_app.run(host='0.0.0.0', port=5002)
+@app.route("/state", methods=["GET"])
+def get_state():
+    """
+    Devuelve el estado actual del sistema:
+    - Lista de taxis con su posición, estado y cliente asignado
+    - Lista de clientes con su estado y posición
+    - Lista de locations disponibles en el mapa
+    """
+    try:
+        taxis = db.obtener_taxis()       #Lista de diccionarios: [{id, estado, coord_x, coord_y, ...}, ...]
+        clientes = db.obtener_clientes() #Lista de diccionarios: [{id, status, coord_x, coord_y, destination_id}, ...]
+        locations = db.obtener_locations() #Lista de diccionarios: [{id, coord_x, coord_y}, ...]
+
+        # Convertir a listas "serializables"
+        taxis_list = [dict(t) for t in taxis] if taxis else []
+        clients_list = [dict(c) for c in clientes] if clientes else []
+        locations_list = [dict(l) for l in locations] if locations else []
+
+        response = {
+            "taxis": taxis_list,
+            "clients": clients_list,
+            "locations": locations_list,
+            "message": "Estado del sistema devuelto correctamente."
+        }
+        return jsonify(response), 200
+    except Exception as e:
+        logger.error(f"Error obteniendo estado: {e}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    # Lanzar la API en el puerto 5000 (se puede cambiar)
+    app.run(host="0.0.0.0", port=5000, debug=True)
