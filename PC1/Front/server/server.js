@@ -1,5 +1,6 @@
 // server/server.js
 const express = require('express');
+const fetch = require('node-fetch')
 const app = express();
 
 // Servir archivos estáticos desde 'public'
@@ -8,7 +9,7 @@ app.use(express.static('public'));
 // API para obtener estado del mapa
 app.get('/api/map-status', async (req, res) => {
     try {
-        const response = await fetch('http://central-api:3000/status'); //Cambiar a http://<ip de api_central:5002/status
+        const response = await fetch('http://localhost:5000/state'); //Cambiar a http://<ip de api_central:5000/state
         const data = await response.json();
         res.json(data);
     } catch (error) {
