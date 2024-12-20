@@ -1,9 +1,11 @@
 from flask import Flask, jsonify
 from map_reader import DatabaseManager, get_db_params
 import logging
+from flask_cors import CORS
+
 
 app = Flask(__name__)
-
+CORS(app)
 # Inicializar conexión a BD
 db_params = get_db_params()
 db = DatabaseManager(db_params)
@@ -47,4 +49,4 @@ def get_state():
 
 if __name__ == "__main__":
     # Lanzar la API en el puerto 5000 (se puede cambiar)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5005, debug=True)
