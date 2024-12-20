@@ -1,4 +1,3 @@
-<!-- public/index.html -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -6,11 +5,51 @@
     <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
+    <div class="header">
+        <h1>EasyCab System Monitor</h1>
+    </div>
+
+    <div class="city-control">
+        <input type="text" id="cityInput" placeholder="Enter city name">
+        <button id="changeCityBtn">Change City</button>
+    </div>
+
+    <div id="traffic-status"></div>
+    
     <div id="map-container"></div>
-    <div id="traffic"></div>
-    <div id="status-panel"></div>
-    <input type="text" id="cityInput" placeholder="Ciudad">
-    <button id="changeCityBtn">Cambiar Ciudad</button>
+    
+    <div id="status-panel">
+        <h2>System Status</h2>
+        <div class="taxi-section">
+            <h3>Taxis</h3>
+            <table class="taxi-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th>Destination</th>
+                        <th>Client</th>
+                    </tr>
+                </thead>
+                <tbody id="taxi-tbody"></tbody>
+            </table>
+        </div>
+        
+        <div class="client-section">
+            <h3>Clients</h3>
+            <table class="client-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th>Destination</th>
+                    </tr>
+                </thead>
+                <tbody id="client-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
     <script src="/js/main.js"></script>
 </body>
 </html>
