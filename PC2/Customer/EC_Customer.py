@@ -105,11 +105,16 @@ class ECCustomer:
     def request_ride(self, destination_id):
         if self.state != CustomerState.CONNECTED_WAITING_SERVICE:
             self.logger.debug(f"No se puede solicitar servicio en estado: {self.state}")
-            return True  # Retornamos True para no interrumpir el bucle principal
-            
+            return True
+                
         if destination_id not in self.locations:
             self.logger.error(f"Destino inválido: {destination_id}")
             return False
+
+        # Añadir control para evitar solicitudes duplicadas
+        if hasattr(self, '_last_request_time'):
+            if time.time() - self._last_request_time < 1.0:  # Esperar al menos 1 segundo
+                return True
 
         message = {
             'type': 'ride_request',
@@ -118,11 +123,13 @@ class ECCustomer:
             'destination_id': destination_id,
             'timestamp': time.time()
         }
-        
+            
         try:
             self.producer.send('ride_requests', value=message)
+            self.producer.flush()  # Asegurarse que se envía
             self.current_destination_id = destination_id
             self.waiting_for_next_request = False
+            self._last_request_time = time.time()  # Guardar tiempo de última solicitud
             self.logger.info(f"Solicitud de viaje enviada - Destino: {destination_id}")
             return True
         except Exception as e:
@@ -189,12 +196,14 @@ class ECCustomer:
                 
                 self.state = CustomerState.CONNECTED_WAITING_SERVICE
                 self.assigned_taxi = None
-                self.current_destination_id = None
+                # No limpiamos current_destination_id porque queremos reintentar el mismo destino
+                # self.current_destination_id = None  <- Removemos esta línea
                 self.last_processed_message_time = current_time
-                self.waiting_for_next_request = True
+                self.waiting_for_next_request = False  # Cambiamos a False para que reintente
                 
                 if response.get('reason') == 'taxi_disconnected':
                     self.logger.warning("El taxi se ha desconectado permanentemente")
+                    self.logger.info("Reintentando viaje con otro taxi...")
                 return 'terminated'
             return True
         
@@ -266,31 +275,46 @@ def main():
         while current_request_index < len(customer.requests):
             destination_id = customer.requests[current_request_index]
             
-            # Si estamos esperando servicio y no estamos esperando el siguiente request
             if (customer.state == CustomerState.CONNECTED_WAITING_SERVICE and 
                 not customer.waiting_for_next_request):
-                if not customer.request_ride(destination_id):
-                    time.sleep(4)
+                
+                # Verificar que el destino es válido
+                if destination_id in customer.locations:
+                    success = customer.request_ride(destination_id)
+                    if not success:
+                        customer.logger.error(f"Error solicitando viaje a {destination_id}")
+                        time.sleep(4)
+                        continue
+                        
+                    # Esperar respuesta inicial
+                    time.sleep(1)  # Dar tiempo para recibir respuesta
+                        
+                else:
+                    customer.logger.error(f"Destino inválido: {destination_id}")
+                    current_request_index += 1
                     continue
 
-            # Escuchar respuestas continuamente
+            # Escuchar respuestas
             response = customer.listen_for_responses()
             
             if response == 'completed':
                 current_request_index += 1
+                customer.logger.info(f"Servicio completado. Destinos restantes: {len(customer.requests) - current_request_index}")
                 if current_request_index < len(customer.requests):
-                    customer.logger.info("Esperando 4 segundos antes del siguiente servicio...")
                     time.sleep(4)
                     customer.waiting_for_next_request = False
                 continue
             elif response == 'rejected':
                 customer.logger.info("Esperando 4 segundos antes de reintentar...")
                 time.sleep(4)
-                customer.waiting_for_next_request = False  # Asegurarnos de resetear el flag
+                customer.waiting_for_next_request = False
                 continue
-                    # Enviar mensaje de finalización
-            
-            time.sleep(0.1)  # Pequeña pausa para no saturar el CPU
+            elif response == 'terminated':
+                customer.logger.info("Esperando 4 segundos antes de reintentar con otro taxi...")
+                time.sleep(4)
+                customer.waiting_for_next_request = False
+                continue    
+            time.sleep(0.1) #pequeña pausa para no saturar el cpu
         #fuera del bucle enviamos un adios a la central
         farewell_message = {
                 'type': 'customer_finished',

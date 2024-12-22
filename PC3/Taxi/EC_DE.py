@@ -6,6 +6,7 @@ import threading
 import logging
 from kafka import KafkaConsumer, KafkaProducer
 import time
+import pygame
 import ssl
 from datetime import datetime, timedelta
 import requests
@@ -15,8 +16,27 @@ from urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
+# Primero añadir las constantes necesarias al inicio de la clase
+TILE_SIZE = 35
+MAP_SIZE = 21
+WINDOW_SIZE = MAP_SIZE * TILE_SIZE
+
+# Colores
+BACKGROUND_COLOR = (255, 255, 255)
+GRID_COLOR = (200, 200, 200)
+TAXI_COLOR = (0, 255, 0)
+TAXI_END_COLOR = (255, 0, 0)
+LOCATION_COLOR = (0, 0, 255)
+CUSTOMER_COLOR = (255, 255, 0)
+TEXT_COLOR = (0, 0, 0)
+INDEX_BG_COLOR = (240, 240, 240)
+
+
 class DigitalEngine:
     def __init__(self, central_ip, central_port, kafka_broker, sensor_port, taxi_id):
+        # Primero asignar el taxi_id
+        self.taxi_id = taxi_id
+        
         # Configurar logging
         self.logger = logging.getLogger(f'taxi_{taxi_id}')
         self.logger.setLevel(logging.INFO)
@@ -25,11 +45,25 @@ class DigitalEngine:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         
-        # Atributos del taxi
-        self.taxi_id = taxi_id
-        self.position = [1, 1]  # Posición inicial
-        self.state = "no_disponible"  # Inicialmente no disponible hasta autenticación
-        self.esta_parado = True  # Inicialmente parado
+        # Inicializar pygame
+        pygame.init()
+        self.WINDOW_SIZE = 735  # 21 * 35 (MAP_SIZE * TILE_SIZE)
+        self.screen = pygame.display.set_mode((self.WINDOW_SIZE, self.WINDOW_SIZE))
+        pygame.display.set_caption(f"EasyCab Taxi {self.taxi_id}")
+        
+        # Configurar Kafka consumer para el mapa después de tener taxi_id
+        self.map_consumer = KafkaConsumer(
+            'map_state',
+            bootstrap_servers=[kafka_broker],
+            group_id=f'taxi_map_{self.taxi_id}',
+            auto_offset_reset='latest',
+            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        )
+        
+        # Resto de las inicializaciones...
+        self.position = [1, 1]
+        self.state = "no_disponible"
+        self.esta_parado = True
         self.destination = None
         self.is_authenticated = False
         self.sensor_status = "OK"
@@ -39,16 +73,78 @@ class DigitalEngine:
         self.central_port = central_port
         self.kafka_broker = kafka_broker
         self.sensor_port = sensor_port
-        # Inicializar servidor de sensores
-        self.setup_sensor_server()  # <-- Añadir esta línea
-        # Nuevos atributos para manejar el servicio
+        
+        # Otros atributos
         self.client_id = None
         self.final_destination = None
-        self.auth_token = None  # Para almacenar el token
-        self.ssl_context = self.setup_ssl()  # Cambiar a setup_ssl_context
-        self.cert_token=None
+        self.auth_token = None
+        self.ssl_context = self.setup_ssl()
+        self.cert_token = None
+        self.running = True
+        self.viz_thread = None
+        
+        # Inicializar servidor de sensores
+        self.setup_sensor_server()
 
 
+    def draw_taxi_view(self, map_state):
+        """Dibujar vista del mapa para el taxi"""
+        self.screen.fill(BACKGROUND_COLOR)
+        
+        # Dibujar cuadrícula
+        for i in range(MAP_SIZE):
+            pygame.draw.line(self.screen, GRID_COLOR, 
+                            (i * TILE_SIZE, 0), 
+                            (i * TILE_SIZE, WINDOW_SIZE))
+            pygame.draw.line(self.screen, GRID_COLOR, 
+                            (0, i * TILE_SIZE), 
+                            (WINDOW_SIZE, i * TILE_SIZE))
+        
+        # Dibujar números de índices
+        font = pygame.font.SysFont('Arial', 16)
+        for i in range(1, MAP_SIZE):
+            num_text = font.render(str(i), True, TEXT_COLOR)
+            self.screen.blit(num_text, (i * TILE_SIZE + TILE_SIZE//4, TILE_SIZE//4))
+            self.screen.blit(num_text, (TILE_SIZE//4, i * TILE_SIZE + TILE_SIZE//4))
+        
+        if not map_state:
+            return
+            
+        # Dibujar locations
+        for loc in map_state['locations']:
+            x_pixel = loc['position'][1] * TILE_SIZE
+            y_pixel = loc['position'][0] * TILE_SIZE
+            pygame.draw.rect(self.screen, LOCATION_COLOR,
+                            (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
+            text = font.render(loc['id'], True, TEXT_COLOR)
+            self.screen.blit(text, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
+        
+        # Dibujar clientes
+        for client in map_state['clients']:
+            if client.get('status') != 'picked_up':
+                x_pixel = client['position'][1] * TILE_SIZE
+                y_pixel = client['position'][0] * TILE_SIZE
+                pygame.draw.rect(self.screen, CUSTOMER_COLOR,
+                            (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
+                text = font.render(client['id'].lower(), True, TEXT_COLOR)
+                self.screen.blit(text, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
+        
+        # Dibujar taxis
+        for taxi in map_state['taxis']:
+            if taxi['estado'] != 'no_disponible':
+                color = TAXI_COLOR if (taxi['estado'] == 'en_movimiento' and 
+                                    not taxi['esta_parado']) else TAXI_END_COLOR
+                x_pixel = taxi['position'][1] * TILE_SIZE
+                y_pixel = taxi['position'][0] * TILE_SIZE
+                pygame.draw.rect(self.screen, color,
+                            (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
+                text = font.render(str(taxi['id']), True, TEXT_COLOR)
+                self.screen.blit(text, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
+    def start_visualization(self):
+        if self.viz_thread is None:
+            self.viz_thread = threading.Thread(target=self.run_visualization)
+            self.viz_thread.daemon = True
+            self.viz_thread.start()
     def register_with_registry(self):
             """Registrarse con el Registry primero"""
             try:
@@ -335,7 +431,50 @@ class DigitalEngine:
                 self.destination = None
                 self.client_id = None
                 self.send_status_update("arrived")
+    def cleanup(self, is_temporary=False):
+        """
+        Limpiar recursos del taxi
+        is_temporary: True si es una desconexión temporal que permite reconexión
+        """
+        try:
+            if not hasattr(self, '_cleanup_called'):
+
+                self.running = False
+                disconnect_message = {
+                    "type": "disconnect",
+                    "taxi_id": self.taxi_id,
+                    "position": self.position,
+                    "state": "no_disponible",
+                    "esta_parado": True,
+                    "token": self.auth_token,
+                    "is_temporary": is_temporary  # Indicar si es temporal
+                }
+                
+                try:
+                    self.producer.send('taxi_status', value=disconnect_message)
+                    self.producer.flush(timeout=5)
+                    if is_temporary:
+                        self.logger.info("Mensaje de desconexión temporal enviado - esperando reconexión")
+                    else:
+                        self.logger.info("Mensaje de cierre enviado - finalizando taxi")
+                except Exception as e:
+                    self.logger.error(f"Error enviando mensaje de desconexión: {e}")
+                
+                if not is_temporary:
+                    # Solo cerrar conexiones si es cierre definitivo
+                    if hasattr(self, 'producer'):
+                        self.producer.close()
+                    if hasattr(self, 'consumer'):
+                        self.consumer.close()
+                    if hasattr(self, 'sensor_server'):
+                        self.sensor_server.close()
+                pygame.quit()
             
+                self._cleanup_called = True
+            
+                
+        except Exception as e:
+            self.logger.error(f"Error en cleanup: {e}")  
     def process_command(self, command):
         """
         Procesar comandos recibidos de la central
@@ -368,17 +507,18 @@ class DigitalEngine:
             elif command_type == "resume_service":
                 # Restaurar estado del servicio
                 self.client_id = command.get("client_id")
-                self.position = command.get("current_position")  # Última posición conocida
-                self.destination = command.get("destination")  # Destino real del cliente
+                self.position = command.get("current_position")
                 
-                if command.get("client_picked_up"):
-                    self.state = "en_movimiento"
-                    self.esta_parado = False
-                    self.logger.info(f"Reanudando servicio con cliente {self.client_id} hacia destino {self.destination}")
+                # Usar el destino correcto
+                if command.get("is_pickup_phase"):
+                    self.destination = command.get("client_position")
+                    self.final_destination = command.get("final_destination")
                 else:
-                    self.state = "en_movimiento"
-                    self.esta_parado = False
-                    self.logger.info(f"Reanudando viaje para recoger al cliente {self.client_id}")
+                    self.destination = command.get("destination")
+                
+                self.state = "en_movimiento"
+                self.esta_parado = False
+                self.logger.info(f"Reanudando servicio desde posición {self.position} hacia {self.destination}")
                 
                 # Notificar estado actual
                 self.send_status_update("service_resumed")
@@ -414,8 +554,33 @@ class DigitalEngine:
             
         except Exception as e:
             self.logger.error(f"Error procesando comando {command_type}: {e}")
-            
+    def run_visualization(self):
+        clock = pygame.time.Clock()
+        while self.running:
+            try:
+                messages = self.map_consumer.poll(timeout_ms=100)
+                for _, msgs in messages.items():
+                    for msg in msgs:
+                        if msg.value:  # Verificar que hay datos válidos
+                            self.draw_taxi_view(msg.value)
+                            pygame.display.flip()
+                
+                # Procesar eventos de Pygame
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.running = False
+                        return
+                        
+                clock.tick(30)  # 30 FPS
+            except Exception as e:
+                self.logger.error(f"Error en visualización: {e}")
+                time.sleep(0.1)  # Evitar bucle infinito en caso de error      
     def run(self):
+        # Añadir thread para la visualización
+        viz_thread = threading.Thread(target=self.run_visualization)
+        viz_thread.daemon = True
+        viz_thread.start()
+
         # Primero registrarse con Registry
         if not self.register_with_registry():
             self.logger.error("No se pudo registrar con Registry")
@@ -426,7 +591,8 @@ class DigitalEngine:
             return
             
         self.setup_kafka()
-        
+        self.start_visualization()  # Iniciar visualización aquí
+
         # Iniciar thread para sensores
         sensor_thread = threading.Thread(target=self.handle_sensors)
         sensor_thread.daemon = True
@@ -455,22 +621,11 @@ class DigitalEngine:
                 
         except KeyboardInterrupt:
             self.logger.info("Cerrando taxi...")
-            # Enviar última actualización de estado antes de cerrar
-            message = {
-                "type": "disconnect",
-                "taxi_id": self.taxi_id,
-                "position": self.position,
-                "state": "no_disponible",
-                "esta_parado": True
-            }
-            try:
-                self.producer.send('taxi_status', value=message)
-                self.producer.flush()  # Asegurarnos de que se envía
-            except:
-                pass  # Si falla el envío, la central lo detectará por timeout
+            self.cleanup(is_temporary=False)  # Cierre definitivo
             sys.exit(0)
         except Exception as e:
             self.logger.error(f"Error en bucle principal: {e}")
+            self.cleanup(is_temporary=True)  # Desconexión temporal
 
 def main():
     if len(sys.argv) != 6:
