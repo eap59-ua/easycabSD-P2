@@ -1297,7 +1297,7 @@ class CentralSystem:
     def check_traffic(self):
         while self.running:
             try:
-                response = requests.get("http://localhost:5001/traffic", timeout=5)
+                response = requests.get("http://localhost:5002/traffic", timeout=5)
                 if response.status_code == 200:
                     status = response.text.strip()
                     prev_status = self.traffic_status

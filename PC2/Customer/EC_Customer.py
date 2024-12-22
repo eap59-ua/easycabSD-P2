@@ -86,18 +86,20 @@ class ECCustomer:
             return {}
 
     def load_requests(self):
+        requests_filename = f"EC_Requests_{self.client_id}.json"
+        
         try:
-            with open('EC_Requests.json', 'r') as file:
+            with open(requests_filename, 'r') as file:
                 data = json.load(file)
             return [req['Id'] for req in data['Requests']]
         except FileNotFoundError:
-            self.logger.error("Error: El archivo 'EC_Requests.json' no se encontró.")
+            self.logger.error("Error: El archivo '{requests_filename}' no se encontró.")
             return []
         except JSONDecodeError:
-            self.logger.error("Error: El archivo 'EC_Requests.json' no contiene JSON válido.")
+            self.logger.error("Error: El archivo '{requests_filename}' no contiene JSON válido.")
             return []
         except KeyError:
-            self.logger.error("Error: El archivo 'EC_Requests.json' no tiene el formato esperado.")
+            self.logger.error("Error: El archivo '{requests_filename}' no tiene el formato esperado.")
             return []
 
     def request_ride(self, destination_id):
