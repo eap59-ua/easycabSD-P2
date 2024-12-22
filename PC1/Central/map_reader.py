@@ -178,10 +178,8 @@ class DatabaseManager:
                 return cursor.fetchall()
     
     def get_available_taxi(self):
-        """Obtener un taxi disponible para servicio"""
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=DictCursor) as cursor:
-                # Primero obtener un taxi usando FOR UPDATE para bloquear la fila
                 cursor.execute("""
                     SELECT id, estado, esta_parado, coord_x, coord_y, 
                         dest_x, dest_y, cliente_asignado
@@ -195,15 +193,23 @@ class DatabaseManager:
                 taxi = cursor.fetchone()
                 
                 if taxi:
-                    # Actualizar estado del taxi seleccionado
+                    # Importante: Verificar nuevamente que sigue disponible
                     cursor.execute("""
-                        UPDATE taxis 
-                        SET estado = 'en_movimiento',
-                            esta_parado = false
-                        WHERE id = %s;
+                        SELECT id FROM taxis 
+                        WHERE id = %s 
+                        AND estado = 'disponible'
+                        AND cliente_asignado IS NULL
                     """, (taxi['id'],))
-                    conn.commit()
-                    return dict(taxi)
+                    
+                    if cursor.fetchone():
+                        cursor.execute("""
+                            UPDATE taxis 
+                            SET estado = 'en_movimiento',
+                                esta_parado = false
+                            WHERE id = %s;
+                        """, (taxi['id'],))
+                        conn.commit()
+                        return dict(taxi)
                 return None
         
     def verificar_taxi(self, taxi_id):

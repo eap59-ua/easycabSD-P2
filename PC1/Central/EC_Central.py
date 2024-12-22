@@ -101,6 +101,15 @@ class CentralSystem:
         traffic_thread=threading.Thread(target=self.check_traffic)
         traffic_thread.daemon=True
         traffic_thread.start()
+
+        # que se muestre el mapa en todos los taxis:
+        self.map_producer = KafkaProducer(
+            bootstrap_servers=[self.kafka_broker],
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            compression_type='gzip'  # Comprimir datos
+        )
+
+
         
     def setup_socket_server(self):
         """Inicializar servidor socket seguro para autenticación"""
@@ -122,6 +131,48 @@ class CentralSystem:
         auth_thread.daemon = True
         auth_thread.start()
 
+        
+    def get_current_map_state(self):
+        """Obtener el estado actual del mapa para enviar a los taxis"""
+        try:
+            map_state = {
+                'taxis': [],
+                'clients': [],
+                'locations': [],
+                'timestamp': time.time()
+            }
+            
+            # Obtener datos de taxis
+            taxis = self.db.obtener_taxis()
+            for taxi in taxis:
+                map_state['taxis'].append({
+                    'id': taxi['id'],
+                    'position': [taxi['coord_x'], taxi['coord_y']],
+                    'estado': taxi['estado'],
+                    'esta_parado': taxi['esta_parado']
+                })
+            
+            # Obtener datos de clientes activos
+            for client_id, client in self.active_clients.items():
+                map_state['clients'].append({
+                    'id': client_id,
+                    'position': client['position'],
+                    'status': client.get('status', 'waiting')
+                })
+            
+            # Obtener locations
+            locations = self.db.obtener_locations()
+            for loc in locations:
+                map_state['locations'].append({
+                    'id': loc['id'],
+                    'position': [loc['coord_x'], loc['coord_y']]
+                })
+            
+            return map_state
+            
+        except Exception as e:
+            self.logger.error(f"Error generando estado del mapa: {e}")
+            return None
     def cleanup(self):
         """Liberar recursos sin afectar la resiliencia"""
         if not hasattr(self, '_cleanup_called'):
@@ -170,6 +221,7 @@ class CentralSystem:
                 'type': 'return_to_base',
                 'destination': [1, 1]
             })
+    
     def setup_kafka(self):
         """Configurar productores y consumidores de Kafka"""
         self.producer = KafkaProducer(
@@ -279,7 +331,6 @@ class CentralSystem:
                     
             except Exception as e:
                 self.logger.error(f"Error en conexión SSL: {e}", exc_info=True)
-    # En EC_Central.py
     def handle_taxi_auth(self, message):
         """Manejar autenticación de taxi"""
         taxi_id = message.get('taxi_id')
@@ -290,48 +341,48 @@ class CentralSystem:
             if taxi_id in self.disconnected_taxis:
                 info = self.disconnected_taxis[taxi_id]
                 info['timer'].cancel()  # Cancelar el timer
-                try:
-                    # Restaurar estado del taxi
+                
+                # Restaurar estado del taxi
+                if info['client_id']:
+                    # Determinar el destino correcto basado en la fase del servicio
+                    current_destination = info['current_destination']
+                    
+                    order = {
+                        'type': 'resume_service',
+                        'taxi_id': taxi_id,
+                        'client_id': info['client_id'],
+                        'current_position': info['position'],
+                        'destination': current_destination,  # Usar el destino actual guardado
+                        'final_destination': info['final_destination'],
+                        'is_pickup_phase': info['is_pickup_phase'],
+                        'client_position': info['client_position']
+                    }
+                    
+                    # Restaurar estado en BD
                     self.db.restore_taxi_state(
                         taxi_id=taxi_id,
                         position=info['position'],
                         client_id=info['client_id'],
-                        estado=info['estado'],
-                        destino=info['final_destination']
+                        estado='en_movimiento',
+                        destino=current_destination
                     )
                     
-                    # Si tenía un cliente en el taxi
-                    if info['client_id'] and info['client_picked_up']:
-                        order = {
-                            'type': 'resume_service',
-                            'taxi_id': taxi_id,
-                            'client_id': info['client_id'],
-                            'current_position': info['position'],
-                            'destination': info['final_destination'],
-                            'client_picked_up': True
-                        }
-                    elif info['client_id']:  # Si tenía cliente pero no lo había recogido
-                        order = {
-                            'type': 'pickup',
-                            'taxi_id': taxi_id,
-                            'client_id': info['client_id'],
-                            'pickup_location': info['client_position'],
-                            'destination': info['final_destination']
-                        }
+                    # Enviar orden al taxi
+                    self.send_taxi_order(taxi_id, order)
                     
-                    if info['client_id']:
-                        self.send_taxi_order(taxi_id, order)
-                        self.logger.info(f"Orden de continuación enviada al taxi {taxi_id}")
+                    # Notificar al cliente
+                    response = {
+                        'type': 'service_resumed',
+                        'client_id': info['client_id'],
+                        'message': 'El taxi se ha reconectado y continúa el servicio'
+                    }
+                    self.producer.send('customer_responses', value=response)
                     
-                    del self.disconnected_taxis[taxi_id]
-                    return {'status': 'OK', 'restore': True, 'token': self.generate_token(taxi_id)}
-                
-                except Exception as e:
-                    self.logger.error(f"Error en reconexión del taxi {taxi_id}: {e}")
-                    return {'status': 'ERROR'}
-            
+                del self.disconnected_taxis[taxi_id]
+                return {'status': 'OK', 'restore': True, 'token': self.generate_token(taxi_id)}                
             # Si no es reconexión
             if self.db.verificar_taxi(taxi_id):
+                # Aquí sí podemos usar posición inicial [1,1] porque es nueva autenticación
                 self.db.actualizar_taxi_autenticado(taxi_id, 1, 1)
                 token = self.generate_token(taxi_id)
                 self.logger.info(f"Nueva autenticación exitosa del taxi {taxi_id}")
@@ -339,7 +390,7 @@ class CentralSystem:
             else:
                 self.logger.warning(f"Autenticación fallida para taxi {taxi_id}")
                 return {'status': 'ERROR'}
-        
+            
         except Exception as e:
             self.logger.error(f"Error en autenticación del taxi {taxi_id}: {e}")
             return {'status': 'ERROR'}
@@ -359,27 +410,50 @@ class CentralSystem:
             client_id = info['client_id']
             
             if client_id:
-                # Actualizar el estado del cliente a waiting
+                # Actualizar el estado del cliente y su posición
                 if client_id in self.active_clients:
+                    # Determinar la posición final del cliente
+                    if info['is_pickup_phase']:
+                        # Si el taxi no había recogido al cliente aún, 
+                        # el cliente se queda en su posición original
+                        final_position = info['client_position']
+                    else:
+                        # Si el taxi ya había recogido al cliente,
+                        # el cliente se queda en la última posición del taxi
+                        final_position = info['position']
+                    
                     self.active_clients[client_id].update({
                         'status': 'waiting',
-                        'position': info['client_position'] if not info['client_picked_up'] else info['position']
+                        'position': final_position
                     })
+                    
+                    # Actualizar el estado del cliente en la BD
+                    self.db.actualizar_estado_cliente(
+                        client_id=client_id,
+                        status='waiting',
+                        coord_x=final_position[0],
+                        coord_y=final_position[1]
+                    )
                     
                     # Notificar al cliente
                     response = {
                         'type': 'service_terminated',
                         'client_id': client_id,
-                        'final_position': self.active_clients[client_id]['position'],
+                        'final_position': final_position,
                         'reason': 'taxi_disconnected',
-                        'message': 'El servicio ha sido interrumpido por desconexión permanente del taxi'
+                        'message': ('El servicio ha sido interrumpido por desconexión permanente del taxi' +
+                                (' - Manteniéndote en tu posición original' if info['is_pickup_phase'] else ''))
                     }
                     self.producer.send('customer_responses', value=response)
                     self.logger.info(f"Cliente {client_id} notificado de la pérdida definitiva del taxi {taxi_id}")
-                
-            # Actualizar BD
+                    
+                    # Limpiar la asignación taxi-cliente
+                    if taxi_id in self.active_taxis:
+                        del self.active_taxis[taxi_id]
+            
+            # Actualizar BD - taxi vuelve a base y queda no disponible
             self.db.update_taxi_disconnected(taxi_id)
-    
+            self.logger.info(f"Taxi {taxi_id} marcado como no disponible por desconexión permanente") 
     
     def process_ride_request(self, request):
         """Procesar solicitud de viaje de un cliente"""
@@ -424,6 +498,16 @@ class CentralSystem:
             current_position = request.get('current_position')
             destination_id = request.get('destination_id')
             
+            # PROBLEMA: No se valida que destination_id sea válido
+            if destination_id is None or destination_id not in self.locations:
+                self.logger.warning(f"Destino inválido para cliente {client_id}")
+                response = {
+                    'type': 'ride_rejected',
+                    'client_id': client_id,
+                    'reason': 'invalid_destination'
+                }
+                self.producer.send('customer_responses', value=response)
+                return
             if client_id in self.active_clients:
                 # Actualizar posición del cliente si ya existe
                 self.active_clients[client_id].update({
@@ -663,55 +747,79 @@ class CentralSystem:
                 return False
                 
         return False
-    
     def handle_taxi_disconnect(self, taxi_id):
         """Manejar desconexión de taxi"""
         self.logger.info(f"Detectada desconexión del taxi {taxi_id}")
         
         try:
             taxi_info = self.db.get_taxi_info(taxi_id)
-            if taxi_info:
-                client_id = taxi_info['cliente_asignado']
-                client_position = None
+            if not taxi_info:
+                return
+
+            client_id = taxi_info['cliente_asignado']
+            
+            # Crear timer para todos los taxis
+            timer = threading.Timer(
+                self.reconnection_window, 
+                self.mark_taxi_as_incident, 
+                args=[taxi_id]
+            )
+            timer.start()
+            
+            # Si tiene cliente asignado, manejar toda la lógica del cliente
+            if client_id and client_id in self.active_clients:
+                # Determinar el destino actual y el tipo de destino
+                current_destination = None
                 final_destination = None
+                is_pickup_phase = True  # Por defecto asumimos que va a recoger al cliente
                 
-                # Si el taxi tiene un cliente, actualizar su posición
-                if client_id and client_id in self.active_clients:
-                    # Si el cliente ya fue recogido, su posición es la misma que la del taxi
-                    if self.active_clients[client_id].get('status') == 'picked_up':
-                        client_position = [taxi_info['coord_x'], taxi_info['coord_y']]
-                        # El destino final es el destino original del cliente
-                        destination_id = self.active_clients[client_id].get('destination_id')
-                        if destination_id in self.locations:
-                            final_destination = self.locations[destination_id]
-                    else:
-                        # Si aún no fue recogido, mantener su posición original
-                        client_position = self.active_clients[client_id]['position']
-                
-                timer = threading.Timer(
-                    self.reconnection_window, 
-                    self.mark_taxi_as_incident, 
-                    args=[taxi_id]
-                )
-                timer.start()
-                
+                if self.has_taxi_reached_client(taxi_id):
+                    # Si ya recogió al cliente, el destino actual es el destino final
+                    is_pickup_phase = False
+                    current_destination = self.locations[self.active_clients[client_id]['destination_id']]
+                    final_destination = current_destination
+                else:
+                    # Si no recogió al cliente, el destino actual es la posición del cliente
+                    current_destination = self.active_clients[client_id]['position']
+                    final_destination = self.locations[self.active_clients[client_id]['destination_id']]
+
+                # Guardar estado completo con info del cliente
                 self.disconnected_taxis[taxi_id] = {
                     'timer': timer,
                     'position': [taxi_info['coord_x'], taxi_info['coord_y']],
                     'client_id': client_id,
                     'estado': taxi_info['estado'],
-                    'client_position': client_position,
+                    'current_destination': current_destination,  # Guardar destino actual
                     'final_destination': final_destination,
-                    'client_picked_up': self.active_clients[client_id]['status'] == 'picked_up' if client_id in self.active_clients else False
+                    'is_pickup_phase': is_pickup_phase,  # Indicar si va a recoger o a destino final
+                    'client_position': self.active_clients[client_id]['position'],
+                    'destination_id': self.active_clients[client_id]['destination_id']  # Guardar ID del destino
                 }
                 
-                # Marcar temporalmente como no disponible
-                self.db.update_taxi_status(taxi_id, 'no_disponible', True)
-                self.logger.info(f"Taxi {taxi_id} marcado temporalmente como no disponible. Esperando {self.reconnection_window}s para reconexión")
-                
+                # Notificar al cliente
+                response = {
+                    'type': 'service_interrupted',
+                    'client_id': client_id,
+                    'message': 'El taxi se ha desconectado temporalmente. Esperando reconexión...',
+                    'is_temporary': True
+                }
+                self.producer.send('customer_responses', value=response)
+                self.logger.info(f"Cliente {client_id} notificado de desconexión temporal")
+            else:
+                # Si no tiene cliente, guardar solo info básica del taxi
+                self.disconnected_taxis[taxi_id] = {
+                    'timer': timer,
+                    'position': [taxi_info['coord_x'], taxi_info['coord_y']],
+                    'client_id': None,
+                    'estado': taxi_info['estado']
+                }
+            
+            # Marcar temporalmente como no disponible
+            self.db.update_taxi_status(taxi_id, 'no_disponible', True)
+            self.logger.info(f"Estado del taxi {taxi_id} guardado para posible reconexión")
+            
         except Exception as e:
             self.logger.error(f"Error al manejar desconexión del taxi {taxi_id}: {e}")
-
     def send_taxi_order(self, taxi_id, order):
         """Enviar orden a un taxi específico"""
         try:
@@ -722,6 +830,7 @@ class CentralSystem:
         except Exception as e:
             self.logger.error(f"Error enviando orden al taxi {taxi_id}: {e}")
             return False
+    
     # En Central, añadir método para detectar desconexión de taxi
     def monitor_taxi_connection(self, taxi_id):
         """Monitor para detectar desconexión de taxi"""
@@ -1195,6 +1304,9 @@ class CentralSystem:
         
         self.draw_status_table()
         self.draw_control_panel()  # Añadir esta línea
+        map_state = self.get_current_map_state()
+        self.map_producer.send('map_state', value=map_state)
+
 
         pygame.display.flip()
     def draw_control_panel(self):
