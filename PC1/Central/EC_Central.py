@@ -108,7 +108,7 @@ class CentralSystem:
         self.map_producer = KafkaProducer(
             bootstrap_servers=[self.kafka_broker],
             value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-            compression_type='gzip'  # Comprimir datos
+            #compression_type='gzip'  # Comprimir datos
         )
 
 
@@ -133,45 +133,47 @@ class CentralSystem:
         auth_thread.daemon = True
         auth_thread.start()
 
-        
+
+    # En CentralSystem
     def get_current_map_state(self):
-        """Obtener el estado actual del mapa para enviar a los taxis"""
+        """Optimizado para enviar solo lo esencial"""
         try:
             map_state = {
-                'taxis': [],
-                'clients': [],
-                'locations': [],
-                'timestamp': time.time()
+                'timestamp': time.time(),
+                'grid_state': []
             }
             
-            # Obtener datos de taxis
-            taxis = self.db.obtener_taxis()
-            for taxi in taxis:
-                map_state['taxis'].append({
-                    'id': taxi['id'],
-                    'position': [taxi['coord_x'], taxi['coord_y']],
-                    'estado': taxi['estado'],
-                    'esta_parado': taxi['esta_parado']
-                })
-            
-            # Obtener datos de clientes activos
-            for client_id, client in self.active_clients.items():
-                map_state['clients'].append({
-                    'id': client_id,
-                    'position': client['position'],
-                    'status': client.get('status', 'waiting')
-                })
-            
-            # Obtener locations
+            # Siempre enviar locations
             locations = self.db.obtener_locations()
             for loc in locations:
-                map_state['locations'].append({
-                    'id': loc['id'],
-                    'position': [loc['coord_x'], loc['coord_y']]
+                map_state['grid_state'].append({
+                    'type': 'location',
+                    'pos': [loc['coord_x'], loc['coord_y']],
+                    'id': loc['id']
                 })
+                
+            # Resto del estado...
+            taxis = self.db.obtener_taxis()
+            for taxi in taxis:
+                if taxi['estado'] != 'no_disponible':
+                    map_state['grid_state'].append({
+                        'type': 'taxi',
+                        'pos': [taxi['coord_x'], taxi['coord_y']],
+                        'id': taxi['id'],
+                        'color': 'green' if (taxi['estado'] == 'en_movimiento' and not taxi['esta_parado']) else 'red'
+                    })
             
+            # Añadir clientes activos
+            for client_id, client in self.active_clients.items():
+                if client.get('status') != 'picked_up':
+                    map_state['grid_state'].append({
+                        'type': 'client',
+                        'pos': client['position'],
+                        'id': client_id
+                    })
+                    
             return map_state
-            
+                
         except Exception as e:
             self.logger.error(f"Error generando estado del mapa: {e}")
             return None
@@ -1306,10 +1308,13 @@ class CentralSystem:
         
         self.draw_status_table()
         self.draw_control_panel()  # Añadir esta línea
-        map_state = self.get_current_map_state()
-        self.map_producer.send('map_state', value=map_state)
-
-
+        current_time = time.time()
+        if not hasattr(self, 'last_map_update') or current_time - self.last_map_update >= 0.1:
+            map_state = self.get_current_map_state()
+            if map_state:
+                self.map_producer.send('map_state', value=map_state)
+                self.last_map_update = current_time
+    
         pygame.display.flip()
     def draw_control_panel(self):
         """Dibujar panel de control para enviar órdenes a los taxis"""
