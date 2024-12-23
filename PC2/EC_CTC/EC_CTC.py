@@ -23,14 +23,35 @@ def get_traffic_status():
     r = requests.get(url)
     if r.status_code == 200:
         data = r.json()
-        temp = data['main']['temp']
-        if temp < 0:
-            return "KO"  # No viable
-        else:
-            return "OK"  # Viable
+        
+        #Si no encuentra información (se ha producido un error), devolvemos KO
+        if data.get("cod") != 200:
+            return jsonify({
+                "status": "KO",
+                "city": current_city,
+                "temp": None
+            }), 200
+        
+        #Si la consulta ha funcionado, extraemos la información correspondiente
+        city_name = data.get("name", "")
+        temp = data["main"]["temp"]
+        
+        status = "KO" if temp < 0 else "OK"
+        
+        #Devolvemos un JSON con la información extraída y el estado del tráfico según la temperatura
+        return jsonify({
+            "status": status,           #OK/KO, según temp
+            "city": city_name,          #Nombre de la ciudad
+            "temp": temp                #Temperatura en °C
+        }), 200
+    
     else:
-        return "KO"  # Si no podemos obtener datos, mejor devolver KO o algún error
+        return jsonify({
+                "status": "KO",
+                "city": current_city,       #Devuelve la ciudad por defecto o la última que estaba
+                "temp": None
+            }), r.status_code
 
 if __name__ == '__main__':
-    #Iniciar el servidor Flask, en el puerto 5001, por ejemplo
+    #Iniciar el servidor Flask, en el puerto 5002
     app.run(host='0.0.0.0', port=5002, debug=False)

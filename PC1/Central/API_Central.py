@@ -25,11 +25,13 @@ def get_state():
     - Lista de taxis con su posición, estado y cliente asignado
     - Lista de clientes con su estado y posición
     - Lista de locations disponibles en el mapa
+    - Info del ctc_status
     """
     try:
         taxis = db.obtener_taxis()       #Lista de diccionarios: [{id, estado, coord_x, coord_y, ...}, ...]
         clientes = db.obtener_clientes() #Lista de diccionarios: [{id, status, coord_x, coord_y, destination_id}, ...]
         locations = db.obtener_locations() #Lista de diccionarios: [{id, coord_x, coord_y}, ...]
+        ctc = db.get_ctc_status()
 
         # Convertir a listas "serializables"
         taxis_list = [dict(t) for t in taxis] if taxis else []
@@ -40,6 +42,7 @@ def get_state():
             "taxis": taxis_list,
             "clients": clients_list,
             "locations": locations_list,
+            "ctc": ctc,
             "message": "Estado del sistema devuelto correctamente."
         }
         return jsonify(response), 200

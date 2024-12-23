@@ -95,6 +95,8 @@ class CentralSystem:
         self.secret_key = "EasyCab2024SecureKey"  # O cualquier string aleatorio complejo
         
 
+        self.current_city = "Alicante"
+        self.current_temp = None
         #Hilo para consultar a EC_CTC
         self.traffic_status=True
         self.running=True
@@ -1411,17 +1413,77 @@ class CentralSystem:
             try:
                 response = requests.get("http://localhost:5002/traffic", timeout=5)
                 if response.status_code == 200:
-                    status = response.text.strip()
+                    data=response.json()
+                    
+                    city = data["city"]
+                    temp = data["temp"]
+                    traffic_ok = (data["status"] == "OK")
+                    
+                    self.current_city = city
+                    self.current_temp = temp
                     prev_status = self.traffic_status
-                    self.traffic_status = (status == "OK")
+                    self.traffic_status = traffic_ok
+
+                    #Guardamos la información en la BD
+                    self.db.update_ctc_status(city, temp, traffic_ok)
+                    
                     # Solo enviar órdenes si el estado cambió a KO
                     if prev_status and not self.traffic_status:
                         self.order_all_taxis_to_base()
                 else:
                     self.traffic_status = False
-            except:
+                    self.db.update_ctc_status(self.current_city, self.current_temp or 0.0, False)
+
+            except Exception as e:
                 self.traffic_status = False
+                # Guardar en BD (KO)
+                self.db.update_ctc_status(self.current_city, self.current_temp or 0.0, False)
+                print(f"Error en check_traffic: {e}")
+            
             time.sleep(10)
+
+    def change_city(self, new_city):
+        """
+        Llama a la CTC para cambiar la ciudad y devuelve el resultado: "OK" o "ERROR", la ciudad y la temp.
+        """
+        try:
+            payload = {"city": new_city}
+            r = requests.post("http://localhost:5002/city", json=payload, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                if data["status"] == "OK":
+                    #Hacemos la petición inmediatamente para poder mostrar rápido el cambio de ciudad y la nueva temperatura, así como el estado del tráfico
+                    traffic_resp = requests.get("http://localhost:5002/traffic", timeout=5).json()
+                    if r.status_code == 200:
+                        city = traffic_resp["city"]
+                        temp = traffic_resp["temp"]
+                        traffic_ok = (traffic_resp["status"] == "OK")
+
+                        self.current_city = city
+                        self.current_temp = temp
+                        self.traffic_status = traffic_ok
+
+                        #Guardamos la nueva información con la nueva ciudad en la base de datos
+                        self.db.update_ctc_status(city, temp, traffic_ok)
+
+                        #Devolvemos el "status" en base a la temperatura
+                        return {
+                            "status": traffic_resp["status"], 
+                            "city": city, 
+                            "temp": temp
+                        }
+                    else:
+                        self.db.update_ctc_status(new_city, 0.0, False)
+                        return {"status": "ERROR", "city": new_city, "temp": None}
+                    
+                else:
+                    return {"status": "ERROR", "city": new_city, "temp": None}
+            
+            else:
+                return {"status": "ERROR", "city": new_city, "temp": None}
+        except Exception as e:
+            self.logger.error(f"Error cambiando ciudad: {e}")
+            return {"status": "ERROR", "city": new_city, "temp": None}
 
 def main():
     parser = argparse.ArgumentParser(description='EasyCab Central Server')
