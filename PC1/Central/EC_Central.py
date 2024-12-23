@@ -104,6 +104,11 @@ class CentralSystem:
         traffic_thread.daemon=True
         traffic_thread.start()
 
+        #Hilo para procesar comandos de la BD cada 1s
+        commands_thread = threading.Thread(target=self.check_commands)
+        commands_thread.daemon = True
+        commands_thread.start()
+
         # que se muestre el mapa en todos los taxis:
         self.map_producer = KafkaProducer(
             bootstrap_servers=[self.kafka_broker],
@@ -1446,6 +1451,36 @@ class CentralSystem:
                 print(f"Error en check_traffic: {e}")
             
             time.sleep(10)
+
+    def check_commands(self):
+        """
+        Hilo que revisa cada 1s la tabla ctc_commands, 
+        y si encuentra un 'change_city', llama a self.change_city(...) 
+        y marca el comando como processed.
+        """
+        while self.running:
+            try:
+                commands = self.db.get_unprocessed_ctc_commands()
+                for cmd in commands:
+                    cmd_id = cmd["id"]
+                    cmd_type = cmd["command_type"]
+                    cmd_data = cmd["command_data"]
+                    
+                    if cmd_type == "change_city":
+                        # Llama a tu método local
+                        result = self.change_city(cmd_data)  # city
+                        # Podrías hacer logging, o guardar la respuesta en algún lado
+                        self.logger.info(f"Resultado al cambiar ciudad: {result}")
+                    
+                    # tras ejecutar la acción, marcar como processed
+                    self.db.mark_command_processed(cmd_id)
+
+            except Exception as e:
+                self.logger.error(f"Error en check_commands: {e}")
+            
+            # Esperamos 2 seg para no saturar
+            time.sleep(2)
+
 
     def change_city(self, new_city):
         """

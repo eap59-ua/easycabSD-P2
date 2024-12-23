@@ -50,6 +50,28 @@ def get_state():
         logger.error(f"Error obteniendo estado: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/ctc/city", methods=["POST"])
+def request_change_city():
+    """
+    Como no podemos llamar a la central, marcamos en la BD que se quiere cambiar a 'new_city'.
+    """
+    try:
+        data = request.get_json()
+        new_city = data.get("city")
+        if not new_city:
+            return jsonify({"status": "ERROR", "message": "No city provided"}), 400
+        
+        # Insertar en la tabla ctc_commands
+        db.insert_ctc_command("change_city", new_city)
+        
+        # Devolvemos OK, pero en realidad, la Central lo ejecutará asíncronamente
+        return jsonify({"status": "PENDING", "city": new_city}), 200
+    except Exception as e:
+        logger.error(f"Error en request_change_city: {e}")
+        return jsonify({"status": "ERROR", "message": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Lanzar la API en el puerto 5000 (se puede cambiar)
     app.run(host="0.0.0.0", port=5005, debug=True)

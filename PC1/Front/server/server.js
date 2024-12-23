@@ -9,36 +9,25 @@ app.use(express.static(path.join(__dirname, '../public')));
 app.use(express.json());
 app.use(cors());
 // Endpoints
+// GET /api/map-status -> llama a /state en API_Central
 app.get('/api/map-status', async (req, res) => {
-    try {
-        const response = await fetch('http://127.0.0.1:5005/state');
-        const data = await response.json();
-        res.json(data);
-    } catch (error) {
-        console.error('Error fetching map status:', error);
-        res.status(500).json({ error: 'Error fetching map status' });
-    }
-});
-
-// Endpoint para obtener estado del tráfico
-app.get('/api/traffic', async (req, res) => {
   try {
-    const response = await fetch('http://127.0.0.1:5002/traffic');
-    const data = await response.text();
-    res.json({ status: data });
+    const response = await fetch('http://localhost:5005/state');
+    const data = await response.json();
+    res.json(data);
   } catch (error) {
-    console.error('Error fetching traffic status:', error);
-    res.status(500).json({ error: 'Error fetching traffic status' });
+    console.error('Error fetching map status:', error);
+    res.status(500).json({ error: 'Error fetching map status' });
   }
 });
 
-// Endpoint para cambiar ciudad
+// POST /api/city -> llama a /ctc/city en API_Central
 app.post('/api/city', async (req, res) => {
   try {
-    const response = await fetch('http://127.0.0.1:5002/city', {
+    const response = await fetch('http://localhost:5005/ctc/city', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body) // { city: "..." }
     });
     const data = await response.json();
     res.json(data);
@@ -47,6 +36,8 @@ app.post('/api/city', async (req, res) => {
     res.status(500).json({ error: 'Error changing city' });
   }
 });
+
+
 
 const PORT = 8080;
 app.listen(PORT, () => {

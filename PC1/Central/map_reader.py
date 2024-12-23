@@ -520,3 +520,43 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error en get_ctc_status: {e}")
             raise
+
+
+    #Métodos para realizar el cambio de ciudad, desde el front
+    def insert_ctc_command(self, command_type, command_data):
+        """
+        Inserta un registro en la tabla ctc_commands con el comando a ejecutar.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO ctc_commands (command_type, command_data)
+                        VALUES (%s, %s)
+                    """, (command_type, command_data))
+                    conn.commit()
+            self.logger.info(f"Comando insertado en ctc_commands: {command_type} -> {command_data}")
+        except Exception as e:
+            self.logger.error(f"Error en insert_ctc_command: {e}")
+            raise
+
+    def get_unprocessed_ctc_commands(self):
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT id, command_type, command_data 
+                    FROM ctc_commands 
+                    WHERE processed = false
+                    ORDER BY created_at
+                """)
+                return cursor.fetchall()
+
+    def mark_command_processed(self, command_id):
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE ctc_commands 
+                    SET processed = true 
+                    WHERE id = %s
+                """, (command_id,))
+                conn.commit()

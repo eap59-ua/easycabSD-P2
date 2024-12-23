@@ -4,11 +4,6 @@ async function fetchStatus() {
     return response.json();
 }
 
-async function fetchTraffic() {
-    const response = await fetch('/api/traffic');
-    return response.json();
-}
-
 // Sistema de alertas
 class AlertSystem {
     constructor() {
@@ -35,14 +30,9 @@ const alertSystem = new AlertSystem();
 // Función principal de actualización
 async function updateSystem() {
     try {
-        const [data, trafficData] = await Promise.all([
-            fetchStatus(),
-            fetchTraffic()
-        ]);
-
+        const [data] = await fetchStatus();
         drawMap(data);
         updateStatusPanel(data);
-        updateTrafficStatus(trafficData.status);
         updateTaxiList(data.taxis);
         updateClientList(data.clients);
         
@@ -54,17 +44,23 @@ async function updateSystem() {
 
 function updateStatusPanel(data) {
     const trafficStatus = document.getElementById('traffic-status');
-    if (data.ctc_status) {
-        const isOk = data.ctc_status === 'OK';
-        trafficStatus.innerHTML = `
-            <span class="status-dot ${isOk ? 'green' : 'red'}"></span>
-            ${isOk ? 'Tráfico Normal' : 'Tráfico Interrumpido'}
-        `;
-        if (data.temperature) {
-            document.getElementById('temperature').textContent = 
-                `Temperatura: ${data.temperature}°C`;
-        }
+    
+    if (!data.ctc) {
+        trafficStatus.innerHTML = "Sin información de tráfico";
+        return;
     }
+    
+    const { traffic_ok, temp, city } = data.ctc;  // Ajusta según tus claves reales
+    const isOk = traffic_ok; // true -> OK, false -> KO
+    
+    trafficStatus.innerHTML = `
+        <span class="status-dot ${isOk ? 'green' : 'red'}"></span>
+        ${isOk ? 'Tráfico Normal' : 'Tráfico Interrumpido'}
+        <br>
+        Ciudad actual: ${city}
+        <br>
+        Temperatura: ${temp} °C
+    `;
 }
 
 function updateTaxiList(taxis) {
@@ -197,6 +193,9 @@ document.getElementById('changeCityBtn').addEventListener('click', async () => {
         return;
     }
     
+    // Mostramos un aviso de "Procesando..."
+    alertSystem.addAlert(`Iniciando cambio de ciudad a "${city}"...`, 'info', 3000);
+
     try {
         const response = await fetch('/api/city', {
             method: 'POST',
@@ -205,9 +204,13 @@ document.getElementById('changeCityBtn').addEventListener('click', async () => {
         });
         const data = await response.json();
         
-        if (data.status === 'OK') {
-            alertSystem.addAlert(`Ciudad cambiada a ${city}`, 'info');
+        if (data.status === 'PENDING') {
+            // Reemplazar 'OK' por 'PENDING'
+            alertSystem.addAlert(`Comando de cambio de ciudad enviado. Espera que la Central lo procese...`, 'info', 5000);
             document.getElementById('cityInput').value = '';
+        } 
+        else if (data.status === 'ERROR') {
+            alertSystem.addAlert('Error cambiando la ciudad', 'error');
         } else {
             alertSystem.addAlert('Error cambiando la ciudad', 'error');
         }
