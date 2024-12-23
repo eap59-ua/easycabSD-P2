@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import requests
 import secrets
 import os
+import queue
 from urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -31,6 +32,170 @@ CUSTOMER_COLOR = (255, 255, 0)
 TEXT_COLOR = (0, 0, 0)
 INDEX_BG_COLOR = (240, 240, 240)
 
+class TaxiVisualization:
+    def __init__(self, taxi_id, window_size):
+        pygame.init()
+        # Configurar logging
+        self.logger = logging.getLogger(f'taxi_viz_{taxi_id}')
+        self.logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+
+        # Cola para la comunicación entre hilos
+        self.update_queue = queue.Queue(maxsize=10)
+        
+        # Configuración de pygame
+        self.screen = pygame.display.set_mode((window_size, window_size), 
+                                            pygame.HWSURFACE | pygame.DOUBLEBUF)
+        pygame.display.set_caption(f"Taxi {taxi_id} View")
+        self.font = pygame.font.SysFont('Arial', 16)
+        self.running = True
+        self.taxi_id = taxi_id
+        self.clock = pygame.time.Clock()
+        self.map_state = None
+        self._grid_surface = self._create_grid(window_size)
+
+    def update(self, map_state):
+        """Poner actualización en la cola de manera no bloqueante"""
+        if map_state:
+            try:
+                # Usar put_nowait para evitar bloqueos
+                self.update_queue.put_nowait(map_state.copy())
+            except queue.Full:
+                # Si la cola está llena, descartar el mensaje más antiguo
+                try:
+                    self.update_queue.get_nowait()
+                    self.update_queue.put_nowait(map_state.copy())
+                except (queue.Empty, queue.Full):
+                    pass
+
+
+    def _draw_dynamic_elements(self, surface):
+        """Dibujar elementos dinámicos del mapa"""
+        if not self.map_state:
+            return
+
+        for elem in self.map_state.get('grid_state', []):
+            x_pixel = elem['pos'][1] * TILE_SIZE
+            y_pixel = elem['pos'][0] * TILE_SIZE
+            
+            if 0 <= x_pixel < WINDOW_SIZE and 0 <= y_pixel < WINDOW_SIZE:
+                color = self._get_element_color(elem)
+                pygame.draw.rect(surface, color, (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
+                text = self._get_element_text(elem)
+                text_surface = self.font.render(text, True, TEXT_COLOR)
+                surface.blit(text_surface, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
+                
+                # Resaltar el taxi actual
+                if elem['type'] == 'taxi' and elem['id'] == self.taxi_id:
+                    pygame.draw.rect(surface, (255,255,255), 
+                                  (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE), 2)
+
+    def draw(self):
+        """Dibujar el mapa actual desde la cola"""
+        if not self.running:
+            return
+
+        try:
+            # Procesar eventos pygame
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    return
+                elif event.type == pygame.WINDOWMINIMIZED:
+                    time.sleep(0.1)
+                    continue
+
+            # Obtener última actualización disponible
+            try:
+                while not self.update_queue.empty():
+                    self.map_state = self.update_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+            # Crear surface temporal
+            temp_surface = pygame.Surface((WINDOW_SIZE, WINDOW_SIZE))
+            temp_surface.fill(BACKGROUND_COLOR)
+            
+            # Dibujar elementos base
+            if self._grid_surface:
+                temp_surface.blit(self._grid_surface, (0, 0))
+            
+            # Dibujar elementos dinámicos si hay estado
+            if self.map_state:
+                self._draw_dynamic_elements(temp_surface)
+
+            # Actualizar pantalla
+            self.screen.blit(temp_surface, (0, 0))
+            pygame.display.flip()
+            self.clock.tick(30)
+
+        except Exception as e:
+            self.logger.error(f"Error en visualización: {e}")
+
+    def _draw_element(self, surface, elem):
+        """Dibujar un elemento individual de manera optimizada"""
+        x_pixel = elem['pos'][1] * TILE_SIZE
+        y_pixel = elem['pos'][0] * TILE_SIZE
+        
+        if 0 <= x_pixel < WINDOW_SIZE and 0 <= y_pixel < WINDOW_SIZE:
+            color = self._get_element_color(elem)
+            pygame.draw.rect(surface, color, (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
+            text = self._get_element_text(elem)
+            text_surface = self.font.render(text, True, TEXT_COLOR)
+            surface.blit(text_surface, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
+    def _create_grid(self, window_size):
+        """Crear una superficie con el grid básico"""
+        surface = pygame.Surface((window_size, window_size))
+        surface.fill(BACKGROUND_COLOR)
+        
+        # Dibujar área de índices
+        pygame.draw.rect(surface, INDEX_BG_COLOR, (0, 0, window_size, TILE_SIZE))
+        pygame.draw.rect(surface, INDEX_BG_COLOR, (0, 0, TILE_SIZE, window_size))
+        
+        # Dibujar líneas de la cuadrícula
+        for i in range(MAP_SIZE):
+            pygame.draw.line(surface, GRID_COLOR, 
+                        (i * TILE_SIZE, 0), 
+                        (i * TILE_SIZE, window_size))
+            pygame.draw.line(surface, GRID_COLOR, 
+                        (0, i * TILE_SIZE), 
+                        (window_size, i * TILE_SIZE))
+        
+        # Dibujar números de índices
+        for i in range(1, MAP_SIZE):
+            num_text = self.font.render(str(i), True, TEXT_COLOR)
+            surface.blit(num_text, (i * TILE_SIZE + TILE_SIZE//4, TILE_SIZE//4))
+            surface.blit(num_text, (TILE_SIZE//4, i * TILE_SIZE + TILE_SIZE//4))
+        
+        return surface
+    def _get_element_color(self, elem):
+        """Obtener color para un elemento"""
+        if elem['type'] == 'taxi':
+            return TAXI_COLOR if elem['color'] == 'green' else TAXI_END_COLOR
+        elif elem['type'] == 'client':
+            return CUSTOMER_COLOR
+        elif elem['type'] == 'location':
+            return LOCATION_COLOR
+        return BACKGROUND_COLOR
+
+    def _get_element_text(self, elem):
+        """Obtener texto para un elemento"""
+        if elem['type'] == 'taxi':
+            return str(elem['id'])
+        elif elem['type'] == 'client':
+            return elem['id'].lower()
+        elif elem['type'] == 'location':
+            return elem['id']
+        return ""
+    def cleanup(self):
+        """Limpiar recursos de pygame"""
+        self.running = False
+        pygame.quit()
+
+
 
 class DigitalEngine:
     def __init__(self, central_ip, central_port, kafka_broker, sensor_port, taxi_id):
@@ -46,20 +211,26 @@ class DigitalEngine:
         self.logger.addHandler(handler)
         
         # Inicializar pygame
-        pygame.init()
-        self.WINDOW_SIZE = 735  # 21 * 35 (MAP_SIZE * TILE_SIZE)
-        self.screen = pygame.display.set_mode((self.WINDOW_SIZE, self.WINDOW_SIZE))
-        pygame.display.set_caption(f"EasyCab Taxi {self.taxi_id}")
+        #pygame.init()
+        #self.WINDOW_SIZE = 735  # 21 * 35 (MAP_SIZE * TILE_SIZE)
+        #self.screen = pygame.display.set_mode((self.WINDOW_SIZE, self.WINDOW_SIZE))
+        #pygame.display.set_caption(f"EasyCab Taxi {self.taxi_id}")
         
-        # Configurar Kafka consumer para el mapa después de tener taxi_id
+        self.visualization = TaxiVisualization(taxi_id, WINDOW_SIZE)
+        # Configuración optimizada para el consumidor de mapa
         self.map_consumer = KafkaConsumer(
             'map_state',
             bootstrap_servers=[kafka_broker],
             group_id=f'taxi_map_{self.taxi_id}',
             auto_offset_reset='latest',
-            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+            fetch_min_bytes=1,
+            fetch_max_wait_ms=100,
+            consumer_timeout_ms=100,
+            max_poll_records=1,  # Limitar registros por poll
+            session_timeout_ms=30000,  # Aumentar timeout de sesión
+            heartbeat_interval_ms=10000
         )
-        
         # Resto de las inicializaciones...
         self.position = [1, 1]
         self.state = "no_disponible"
@@ -82,69 +253,63 @@ class DigitalEngine:
         self.cert_token = None
         self.running = True
         self.viz_thread = None
-        
+
+        self.map_queue = queue.Queue(maxsize=10)  # Limitar tamaño para evitar memory leaks
+        self.visualization = TaxiVisualization(taxi_id, WINDOW_SIZE)
+        self.kafka_thread = None
         # Inicializar servidor de sensores
         self.setup_sensor_server()
 
-
-    def draw_taxi_view(self, map_state):
-        """Dibujar vista del mapa para el taxi"""
-        self.screen.fill(BACKGROUND_COLOR)
-        
-        # Dibujar cuadrícula
-        for i in range(MAP_SIZE):
-            pygame.draw.line(self.screen, GRID_COLOR, 
-                            (i * TILE_SIZE, 0), 
-                            (i * TILE_SIZE, WINDOW_SIZE))
-            pygame.draw.line(self.screen, GRID_COLOR, 
-                            (0, i * TILE_SIZE), 
-                            (WINDOW_SIZE, i * TILE_SIZE))
-        
-        # Dibujar números de índices
-        font = pygame.font.SysFont('Arial', 16)
-        for i in range(1, MAP_SIZE):
-            num_text = font.render(str(i), True, TEXT_COLOR)
-            self.screen.blit(num_text, (i * TILE_SIZE + TILE_SIZE//4, TILE_SIZE//4))
-            self.screen.blit(num_text, (TILE_SIZE//4, i * TILE_SIZE + TILE_SIZE//4))
-        
-        if not map_state:
-            return
-            
-        # Dibujar locations
-        for loc in map_state['locations']:
-            x_pixel = loc['position'][1] * TILE_SIZE
-            y_pixel = loc['position'][0] * TILE_SIZE
-            pygame.draw.rect(self.screen, LOCATION_COLOR,
-                            (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
-            text = font.render(loc['id'], True, TEXT_COLOR)
-            self.screen.blit(text, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
-        
-        # Dibujar clientes
-        for client in map_state['clients']:
-            if client.get('status') != 'picked_up':
-                x_pixel = client['position'][1] * TILE_SIZE
-                y_pixel = client['position'][0] * TILE_SIZE
-                pygame.draw.rect(self.screen, CUSTOMER_COLOR,
-                            (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
-                text = font.render(client['id'].lower(), True, TEXT_COLOR)
-                self.screen.blit(text, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
-        
-        # Dibujar taxis
-        for taxi in map_state['taxis']:
-            if taxi['estado'] != 'no_disponible':
-                color = TAXI_COLOR if (taxi['estado'] == 'en_movimiento' and 
-                                    not taxi['esta_parado']) else TAXI_END_COLOR
-                x_pixel = taxi['position'][1] * TILE_SIZE
-                y_pixel = taxi['position'][0] * TILE_SIZE
-                pygame.draw.rect(self.screen, color,
-                            (x_pixel, y_pixel, TILE_SIZE, TILE_SIZE))
-                text = font.render(str(taxi['id']), True, TEXT_COLOR)
-                self.screen.blit(text, (x_pixel + TILE_SIZE//4, y_pixel + TILE_SIZE//4))
     def start_visualization(self):
-        if self.viz_thread is None:
+        if self.viz_thread is None or not self.viz_thread.is_alive():
+            self.running = True
             self.viz_thread = threading.Thread(target=self.run_visualization)
             self.viz_thread.daemon = True
             self.viz_thread.start()
+            
+            try:
+                # Esperar primer estado
+                start = time.time()
+                while time.time() - start < 5:  # Timeout de 5 segundos
+                    messages = self.map_consumer.poll(timeout_ms=100)
+                    if messages:
+                        for tp, msgs in messages.items():
+                            for msg in msgs:
+                                if msg.value:
+                                    self.logger.info("Estado inicial del mapa recibido")
+                                    self.visualization.update(msg.value)
+                                    return
+                    time.sleep(0.1)
+            except Exception as e:
+                self.logger.error(f"Error iniciando visualización: {e}")
+    def consume_map_data(self):
+        """Hilo dedicado para consumir datos del mapa desde Kafka"""
+        try:
+            while self.running:
+                try:
+                    messages = self.map_consumer.poll(timeout_ms=100)
+                    if messages:
+                        for tp, msgs in messages.items():
+                            for msg in msgs:
+                                if msg.value:
+                                    # Usar put_nowait para evitar bloqueos
+                                    try:
+                                        self.map_queue.put_nowait(msg.value)
+                                    except queue.Full:
+                                        # Si la cola está llena, descartar el mensaje más antiguo
+                                        try:
+                                            self.map_queue.get_nowait()
+                                            self.map_queue.put_nowait(msg.value)
+                                        except (queue.Empty, queue.Full):
+                                            pass
+                    time.sleep(0.01)  # Pequeña pausa para no saturar CPU
+                except Exception as e:
+                    self.logger.error(f"Error en consumidor Kafka: {e}")
+                    time.sleep(0.1)
+        except Exception as e:
+            self.logger.error(f"Error fatal en consumidor: {e}")
+
+    
     def register_with_registry(self):
             """Registrarse con el Registry primero"""
             try:
@@ -273,13 +438,28 @@ class DigitalEngine:
             bootstrap_servers=[self.kafka_broker],
             value_serializer=lambda v: json.dumps(v).encode('utf-8')
         )
-        
+        # Consumidor para órdenes específicas del taxi
         self.consumer = KafkaConsumer(
             f'taxi_orders_{self.taxi_id}',
             bootstrap_servers=[self.kafka_broker],
             group_id=f'taxi_group_{self.taxi_id}',
             auto_offset_reset='earliest',
             value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        )
+        self.map_consumer = KafkaConsumer(
+            'map_state',
+            bootstrap_servers=[self.kafka_broker],
+            group_id=f'taxi_map_{self.taxi_id}',
+            auto_offset_reset='latest',
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+            fetch_min_bytes=1,
+            fetch_max_wait_ms=50,  # Reducido para mejor respuesta
+            consumer_timeout_ms=50,  # Reducido para mejor respuesta
+            max_poll_records=1,
+            session_timeout_ms=30000,
+            heartbeat_interval_ms=10000,
+            enable_auto_commit=True,
+            auto_commit_interval_ms=1000
         )
     def setup_ssl(self):
         """Configurar contexto SSL para el cliente"""
@@ -437,9 +617,13 @@ class DigitalEngine:
         is_temporary: True si es una desconexión temporal que permite reconexión
         """
         try:
+            self.running = False
+            if hasattr(self, 'visualization'):
+                self.visualization.running = False
+                self.visualization.cleanup()
+
             if not hasattr(self, '_cleanup_called'):
 
-                self.running = False
                 disconnect_message = {
                     "type": "disconnect",
                     "taxi_id": self.taxi_id,
@@ -555,77 +739,95 @@ class DigitalEngine:
         except Exception as e:
             self.logger.error(f"Error procesando comando {command_type}: {e}")
     def run_visualization(self):
-        clock = pygame.time.Clock()
-        while self.running:
-            try:
-                messages = self.map_consumer.poll(timeout_ms=100)
-                for _, msgs in messages.items():
-                    for msg in msgs:
-                        if msg.value:  # Verificar que hay datos válidos
-                            self.draw_taxi_view(msg.value)
-                            pygame.display.flip()
-                
-                # Procesar eventos de Pygame
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        self.running = False
-                        return
-                        
-                clock.tick(30)  # 30 FPS
-            except Exception as e:
-                self.logger.error(f"Error en visualización: {e}")
-                time.sleep(0.1)  # Evitar bucle infinito en caso de error      
-    def run(self):
-        # Añadir thread para la visualización
-        viz_thread = threading.Thread(target=self.run_visualization)
-        viz_thread.daemon = True
-        viz_thread.start()
-
-        # Primero registrarse con Registry
-        if not self.register_with_registry():
-            self.logger.error("No se pudo registrar con Registry")
-            return
-            
-        # Luego autenticarse con Central
-        if not self.authenticate_with_central():
-            return
-            
-        self.setup_kafka()
-        self.start_visualization()  # Iniciar visualización aquí
-
-        # Iniciar thread para sensores
-        sensor_thread = threading.Thread(target=self.handle_sensors)
-        sensor_thread.daemon = True
-        sensor_thread.start()
-        
-        # Bucle principal
-        movement_delay = 1.0  # 1 segundo entre movimientos
-        last_movement = time.time()
-        
+        """Thread dedicado a la visualización"""
         try:
-            while True:
-                # Procesar mensajes de Kafka
+            while self.running and self.visualization.running:
+                try:
+                    # Procesar mensajes de Kafka
+                    messages = self.map_consumer.poll(timeout_ms=50)
+                    if messages:
+                        for tp, msgs in messages.items():
+                            for msg in msgs:
+                                if msg.value:
+                                    self.visualization.update(msg.value)
+
+                    # Actualizar visualización si pygame sigue activo
+                    if pygame.get_init():
+                        self.visualization.draw()
+                    else:
+                        break
+                    
+                    # Pequeña pausa para no saturar CPU
+                    time.sleep(0.01)
+
+                except Exception as e:
+                    self.logger.error(f"Error en visualización: {e}")
+                    time.sleep(0.1)
+
+        except Exception as e:
+            self.logger.error(f"Error fatal en visualización: {e}")
+        finally:
+            if hasattr(self, 'visualization'):
+                self.visualization.cleanup()
+
+    def run(self):
+        try:
+            # Registrarse primero
+            if not self.register_with_registry():
+                self.logger.error("No se pudo registrar con Registry")
+                return
+                
+            # Luego autenticarse
+            if not self.authenticate_with_central():
+                return
+                
+            # Configurar Kafka
+            self.setup_kafka()
+            
+            # Iniciar thread de sensores
+            sensor_thread = threading.Thread(target=self.handle_sensors)
+            sensor_thread.daemon = True
+            sensor_thread.start()
+            
+            # Iniciar thread de Kafka
+            self.kafka_thread = threading.Thread(target=self.consume_map_data)
+            self.kafka_thread.daemon = True
+            self.kafka_thread.start()
+            # Bucle principal
+            movement_delay = 1.0
+            last_movement = time.time()
+            
+            while self.running:
+                # Procesar eventos Pygame y actualizar visualización
+                if not self.map_queue.empty():
+                    try:
+                        new_state = self.map_queue.get_nowait()
+                        self.visualization.update(new_state)
+                    except queue.Empty:
+                        pass
+                
+                self.visualization.draw()
+
+
                 messages = self.consumer.poll(timeout_ms=100)
                 for tp, msgs in messages.items():
                     for msg in msgs:
                         self.process_command(msg.value)
                 
-                # Mover si es tiempo
                 current_time = time.time()
                 if current_time - last_movement >= movement_delay:
                     if self.state == "en_movimiento" and not self.esta_parado:
                         self.move_towards_destination()
                     last_movement = current_time
                 
-                time.sleep(0.1)  # Evitar consumo excesivo de CPU
+                time.sleep(0.1)
                 
         except KeyboardInterrupt:
             self.logger.info("Cerrando taxi...")
-            self.cleanup(is_temporary=False)  # Cierre definitivo
-            sys.exit(0)
+            self.cleanup(is_temporary=False)
         except Exception as e:
             self.logger.error(f"Error en bucle principal: {e}")
-            self.cleanup(is_temporary=True)  # Desconexión temporal
+            self.cleanup(is_temporary=True)
 
 def main():
     if len(sys.argv) != 6:
