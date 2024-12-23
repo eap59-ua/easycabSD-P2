@@ -11,7 +11,7 @@ app.use(cors());
 // Endpoints
 app.get('/api/map-status', async (req, res) => {
     try {
-        const response = await fetch('http://localhost:5005/state');
+        const response = await fetch('http://127.0.0.1:5005/state');
         const data = await response.json();
         res.json(data);
     } catch (error) {
@@ -23,7 +23,7 @@ app.get('/api/map-status', async (req, res) => {
 // Endpoint para obtener estado del tráfico
 app.get('/api/traffic', async (req, res) => {
   try {
-    const response = await fetch('http://localhost:5001/traffic');
+    const response = await fetch('http://127.0.0.1:5002/traffic');
     const data = await response.text();
     res.json({ status: data });
   } catch (error) {
@@ -35,7 +35,7 @@ app.get('/api/traffic', async (req, res) => {
 // Endpoint para cambiar ciudad
 app.post('/api/city', async (req, res) => {
   try {
-    const response = await fetch('http://localhost:5001/city', {
+    const response = await fetch('http://127.0.0.1:5002/city', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req.body)
