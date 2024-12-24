@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from map_reader import DatabaseManager, get_db_params
 import logging
 from flask_cors import CORS

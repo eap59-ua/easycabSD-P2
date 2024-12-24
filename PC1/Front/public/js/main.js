@@ -30,7 +30,7 @@ const alertSystem = new AlertSystem();
 // Función principal de actualización
 async function updateSystem() {
     try {
-        const [data] = await fetchStatus();
+        const data = await fetchStatus();
         drawMap(data);
         updateStatusPanel(data);
         updateTaxiList(data.taxis);

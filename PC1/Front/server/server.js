@@ -41,5 +41,5 @@ app.post('/api/city', async (req, res) => {
 
 const PORT = 8080;
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on http://192.168.24.21:${PORT}`);
 });
