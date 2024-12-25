@@ -481,3 +481,98 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error eliminando cliente {client_id}: {e}")
             raise
+
+
+    #Métodos para gestionar el tráfico de CTC en la base de datos
+    def update_ctc_status(self, city, temp, traffic_ok):
+        """
+        Actualiza o inserta (en caso de no existir) el estado del CTC en la tabla ctc_status con id=1.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Usamos un "upsert" de Postgres (ON CONFLICT)
+                    cursor.execute("""
+                        INSERT INTO ctc_status (id, current_city, current_temp, traffic_ok)
+                        VALUES (1, %s, %s, %s)
+                        ON CONFLICT (id) 
+                        DO UPDATE SET current_city = EXCLUDED.current_city,
+                                    current_temp = EXCLUDED.current_temp,
+                                    traffic_ok = EXCLUDED.traffic_ok
+                    """, (city, temp, traffic_ok))
+                    conn.commit()
+            self.logger.info(f"CTC status actualizado: city={city}, temp={temp}, traffic_ok={traffic_ok}")
+        except Exception as e:
+            self.logger.error(f"Error en update_ctc_status: {e}")
+            raise
+
+    def get_ctc_status(self):
+        """
+        Devuelve un dict con { "city": str, "temp": float, "traffic_ok": bool }
+        desde la tabla ctc_status (id=1).
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=DictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT current_city, current_temp, traffic_ok 
+                        FROM ctc_status 
+                        WHERE id = 1
+                    """)
+                    row = cursor.fetchone()
+                    if row:
+                        return {
+                            "city": row["current_city"],
+                            "temp": row["current_temp"],
+                            "traffic_ok": row["traffic_ok"]
+                        }
+                    else:
+                        # Si no hay fila con id=1
+                        return {
+                            "city": None,
+                            "temp": None,
+                            "traffic_ok": False
+                        }
+        except Exception as e:
+            self.logger.error(f"Error en get_ctc_status: {e}")
+            raise
+
+
+    #Métodos para realizar el cambio de ciudad, desde el front
+    def insert_ctc_command(self, command_type, command_data):
+        """
+        Inserta un registro en la tabla ctc_commands con el comando a ejecutar.
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO ctc_commands (command_type, command_data)
+                        VALUES (%s, %s)
+                    """, (command_type, command_data))
+                    conn.commit()
+            self.logger.info(f"Comando insertado en ctc_commands: {command_type} -> {command_data}")
+        except Exception as e:
+            self.logger.error(f"Error en insert_ctc_command: {e}")
+            raise
+
+    def get_unprocessed_ctc_commands(self):
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT id, command_type, command_data 
+                    FROM ctc_commands 
+                    WHERE processed = false
+                    ORDER BY created_at
+                """)
+                return cursor.fetchall()
+
+    def mark_command_processed(self, command_id):
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE ctc_commands 
+                    SET processed = true 
+                    WHERE id = %s
+                """, (command_id,))
+                conn.commit()

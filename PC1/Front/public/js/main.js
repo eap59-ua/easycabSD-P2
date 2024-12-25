@@ -11,18 +11,79 @@ async function fetchStatus() {
     }
 }
 
-// Sistema de alertas mejorado
+// Sistema de caché mejorado
+const cache = {
+    lastMapData: null,
+    lastSystemData: null,
+    lastMapUpdate: 0,
+    lastSystemUpdate: 0
+};
+// Nueva función solo para actualizar el mapa
+async function updateMapOnly() {
+    try {
+        const data = await fetchStatus();
+        
+        // Solo actualizar mapa si los datos relevantes han cambiado
+        const mapData = {
+            taxis: data.taxis,
+            clients: data.clients,
+            locations: data.locations
+        };
+
+        if (JSON.stringify(mapData) !== JSON.stringify(cache.lastMapData)) {
+            drawMap(data);
+            cache.lastMapData = mapData;
+            cache.lastMapUpdate = Date.now();
+        }
+    } catch (error) {
+        console.error('Error updating map:', error);
+    }
+}
+// Nueva función para actualizar el resto del sistema
+async function updateSystemStatus() {
+    try {
+        const data = await fetchStatus();
+        
+        // Solo actualizar si los datos del sistema han cambiado
+        const systemData = {
+            traffic: data.traffic,
+            taxis: data.taxis?.map(t => ({ 
+                id: t.id, 
+                estado: t.estado, 
+                cliente_asignado: t.cliente_asignado,
+                has_token: t.has_token 
+            })),
+            clients: data.clients
+        };
+
+        if (JSON.stringify(systemData) !== JSON.stringify(cache.lastSystemData)) {
+            updateTables(data);
+            updateTrafficStatus(data.traffic);
+            
+            cache.lastSystemData = systemData;
+            cache.lastSystemUpdate = Date.now();
+        }
+    } catch (error) {
+        console.error('Error updating system status:', error);
+        alertSystem.addAlert('Error actualizando el estado del sistema', 'error');
+    }
+}
+
+// Mejorar el sistema de alertas
 class AlertSystem {
     constructor() {
         this.container = document.getElementById('alerts-container');
-        this.alerts = new Set();
+        this.alerts = new Map();
     }
 
     addAlert(message, type = 'info', timeout = 5000) {
-        const alertId = `${type}-${message}`;
-        if (this.alerts.has(alertId)) return;
+        const id = `${type}-${message}`;
         
-        this.alerts.add(alertId);
+        // Evitar duplicados
+        if (this.alerts.has(id)) {
+            clearTimeout(this.alerts.get(id).timer);
+        }
+
         const alert = document.createElement('div');
         alert.className = `alert ${type}`;
         alert.innerHTML = `
@@ -30,47 +91,48 @@ class AlertSystem {
             <button onclick="this.parentElement.remove()">×</button>
         `;
         
-        this.container.prepend(alert);
-        
-        setTimeout(() => {
+        const timer = setTimeout(() => {
             alert.remove();
-            this.alerts.delete(alertId);
+            this.alerts.delete(id);
         }, timeout);
+
+        this.alerts.set(id, { alert, timer });
+        this.container.prepend(alert);
     }
 }
-
 const alertSystem = new AlertSystem();
 
-// Función principal de actualización
-async function updateSystem() {
-    try {
-        const data = await fetchStatus();
-        console.log("Actualizando sistema con datos:", data);
-        
-        // Dibujar el mapa
-        drawMap(data);
-        
-        // Actualizar tablas
-        updateTables(data);
 
-        // Actualizar estado del tráfico
-        updateTrafficStatus(data.traffic);
-
-    } catch (error) {
-        console.error('Error updating system:', error);
-        alertSystem.addAlert('Error actualizando el sistema', 'error');
-    }
-}
-
-// Función para actualizar estado del tráfico
-function updateTrafficStatus(trafficData) {
+// En main.js, modificar la función updateTrafficStatus
+function updateTrafficStatus(data) {
     const trafficStatus = document.getElementById('traffic-status');
     if (!trafficStatus) return;
 
-    const isOk = trafficData.status === 'OK';
+    // Si no hay datos de tráfico
+    if (!data || (!data.status && !data.city && !data.temp)) {
+        trafficStatus.innerHTML = "Sin información de tráfico";
+        return;
+    }
+
+    // Obtener valores directamente del objeto data
+    const isOk = data.status === 'OK';
+    const city = data.city || 'No disponible';
+    const temp = data.temp !== undefined ? data.temp.toFixed(2) : 'No disponible';
+
+    // Crear el HTML con la información
     trafficStatus.innerHTML = `
-        <span class="status-dot ${isOk ? 'green' : 'red'}"></span>
-        ${isOk ? 'Tráfico Normal' : 'Tráfico Interrumpido'}
+        <div class="traffic-info">
+            <div class="status-row">
+                <span class="status-dot ${isOk ? 'green' : 'red'}"></span>
+                <span>${isOk ? 'Tráfico Normal' : 'Tráfico Interrumpido'}</span>
+            </div>
+            <div class="city-row">
+                <strong>Ciudad actual:</strong> ${city}
+            </div>
+            <div class="temp-row">
+                <strong>Temperatura:</strong> ${temp !== 'No disponible' ? `${temp}°C` : temp}
+            </div>
+        </div>
     `;
 }
 
@@ -118,7 +180,7 @@ function getStatusEmoji(status) {
     return {
         'disponible': '🟢',
         'en_movimiento': '🚕',
-        'no_disponible': '⚫️'
+        'no_disponible': '🔴'
     }[status] || '⚪️';
 }
 
@@ -203,9 +265,83 @@ function createCell(content, isHeader = false) {
     cell.textContent = content;
     return cell;
 }
+// Evento para cambiar ciudad
+document.getElementById('changeCityBtn').addEventListener('click', async () => {
+    const city = document.getElementById('cityInput').value;
+    if (!city) {
+        alertSystem.addAlert('Por favor, introduce una ciudad', 'warning');
+        return;
+    }
+    
+    // Mostramos un aviso de "Procesando..."
+    alertSystem.addAlert(`Iniciando cambio de ciudad a "${city}"...`, 'info', 3000);
 
+    try {
+        const response = await fetch('http://127.0.0.1:5005/ctc/city', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({city})
+        });
+        const data = await response.json();
+        
+        if (data.status === 'PENDING') {
+            // Reemplazar 'OK' por 'PENDING'
+            alertSystem.addAlert(`Comando de cambio de ciudad enviado. Espera que la Central lo procese...`, 'info', 5000);
+            document.getElementById('cityInput').value = '';
+        } 
+        else if (data.status === 'ERROR') {
+            alertSystem.addAlert('Error cambiando la ciudad', 'error');
+        } else {
+            alertSystem.addAlert('Error cambiando la ciudad', 'error');
+        }
+    } catch (error) {
+        console.error('Error changing city:', error);
+        alertSystem.addAlert('Error en la conexión', 'error');
+    }
+});
+// Añadir algunos estilos dinámicos
+const style = document.createElement('style');
+style.textContent = `
+    .status-dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 5px;
+    }
+    .status-dot.green { background-color: #52c41a; }
+    .status-dot.red { background-color: #f5222d; }
+    .status.available { color: #52c41a; }
+`;
+// En el style que ya tienes en main.js, añadir:
+style.textContent += `
+    .traffic-info {
+        padding: 10px;
+        background: #f5f5f5;
+        border-radius: 4px;
+        margin: 10px 0;
+    }
+    .status-row, .city-row, .temp-row {
+        margin: 5px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .status-dot {
+        margin-right: 8px;
+    }
+`;
+
+
+document.head.appendChild(style);
 // Iniciar actualizaciones cuando se carga la página
+// Modificar el inicializador al final del archivo
 document.addEventListener('DOMContentLoaded', () => {
-    updateSystem();
-    setInterval(updateSystem, 50);
+    // Primera carga
+    updateMapOnly();
+    updateSystemStatus();
+    
+    // Configurar intervalos diferentes
+    setInterval(updateMapOnly, 1000);     // Actualización rápida del mapa
+    setInterval(updateSystemStatus, 5000); // Actualización más lenta del resto
 });

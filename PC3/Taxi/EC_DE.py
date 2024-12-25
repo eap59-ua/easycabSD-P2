@@ -215,8 +215,6 @@ class DigitalEngine:
         #self.WINDOW_SIZE = 735  # 21 * 35 (MAP_SIZE * TILE_SIZE)
         #self.screen = pygame.display.set_mode((self.WINDOW_SIZE, self.WINDOW_SIZE))
         #pygame.display.set_caption(f"EasyCab Taxi {self.taxi_id}")
-        
-        self.visualization = TaxiVisualization(taxi_id, WINDOW_SIZE)
         # Configuración optimizada para el consumidor de mapa
         self.map_consumer = KafkaConsumer(
             'map_state',
@@ -784,6 +782,7 @@ class DigitalEngine:
             # Configurar Kafka
             self.setup_kafka()
             
+            self.start_visualization()
             # Iniciar thread de sensores
             sensor_thread = threading.Thread(target=self.handle_sensors)
             sensor_thread.daemon = True

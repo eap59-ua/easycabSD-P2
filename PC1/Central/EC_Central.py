@@ -95,12 +95,19 @@ class CentralSystem:
         self.secret_key = "EasyCab2024SecureKey"  # O cualquier string aleatorio complejo
         
 
+        self.current_city = "Alicante"
+        self.current_temp = None
         #Hilo para consultar a EC_CTC
         self.traffic_status=True
         self.running=True
         traffic_thread=threading.Thread(target=self.check_traffic)
         traffic_thread.daemon=True
         traffic_thread.start()
+
+        #Hilo para procesar comandos de la BD cada 1s
+        commands_thread = threading.Thread(target=self.check_commands)
+        commands_thread.daemon = True
+        commands_thread.start()
 
         # que se muestre el mapa en todos los taxis:
         self.map_producer = KafkaProducer(
@@ -1414,19 +1421,109 @@ class CentralSystem:
     def check_traffic(self):
         while self.running:
             try:
-                response = requests.get("http://localhost:5001/traffic", timeout=5)
+                response = requests.get("http://localhost:5002/traffic", timeout=5)
                 if response.status_code == 200:
-                    status = response.text.strip()
+                    data=response.json()
+                    
+                    city = data["city"]
+                    temp = data["temp"]
+                    traffic_ok = (data["status"] == "OK")
+                    
+                    self.current_city = city
+                    self.current_temp = temp
                     prev_status = self.traffic_status
-                    self.traffic_status = (status == "OK")
+                    self.traffic_status = traffic_ok
+
+                    #Guardamos la información en la BD
+                    self.db.update_ctc_status(city, temp, traffic_ok)
+                    
                     # Solo enviar órdenes si el estado cambió a KO
                     if prev_status and not self.traffic_status:
                         self.order_all_taxis_to_base()
                 else:
                     self.traffic_status = False
-            except:
+                    self.db.update_ctc_status(self.current_city, self.current_temp or 0.0, False)
+
+            except Exception as e:
                 self.traffic_status = False
+                # Guardar en BD (KO)
+                self.db.update_ctc_status(self.current_city, self.current_temp or 0.0, False)
+                print(f"Error en check_traffic: {e}")
+            
             time.sleep(10)
+
+    def check_commands(self):
+        """
+        Hilo que revisa cada 1s la tabla ctc_commands, 
+        y si encuentra un 'change_city', llama a self.change_city(...) 
+        y marca el comando como processed.
+        """
+        while self.running:
+            try:
+                commands = self.db.get_unprocessed_ctc_commands()
+                for cmd in commands:
+                    cmd_id = cmd["id"]
+                    cmd_type = cmd["command_type"]
+                    cmd_data = cmd["command_data"]
+                    
+                    if cmd_type == "change_city":
+                        # Llama a tu método local
+                        result = self.change_city(cmd_data)  # city
+                        # Podrías hacer logging, o guardar la respuesta en algún lado
+                        self.logger.info(f"Resultado al cambiar ciudad: {result}")
+                    
+                    # tras ejecutar la acción, marcar como processed
+                    self.db.mark_command_processed(cmd_id)
+
+            except Exception as e:
+                self.logger.error(f"Error en check_commands: {e}")
+            
+            # Esperamos 2 seg para no saturar
+            time.sleep(2)
+
+
+    def change_city(self, new_city):
+        """
+        Llama a la CTC para cambiar la ciudad y devuelve el resultado: "OK" o "ERROR", la ciudad y la temp.
+        """
+        try:
+            payload = {"city": new_city}
+            r = requests.post("http://localhost:5002/city", json=payload, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                if data["status"] == "OK":
+                    #Hacemos la petición inmediatamente para poder mostrar rápido el cambio de ciudad y la nueva temperatura, así como el estado del tráfico
+                    traffic_resp = requests.get("http://localhost:5002/traffic", timeout=5).json()
+                    if r.status_code == 200:
+                        city = traffic_resp["city"]
+                        temp = traffic_resp["temp"]
+                        traffic_ok = (traffic_resp["status"] == "OK")
+
+                        self.current_city = city
+                        self.current_temp = temp
+                        self.traffic_status = traffic_ok
+
+                        #Guardamos la nueva información con la nueva ciudad en la base de datos
+                        self.db.update_ctc_status(city, temp, traffic_ok)
+
+                        #Devolvemos el "status" en base a la temperatura
+                        return {
+                            "status": traffic_resp["status"], 
+                            "city": city, 
+                            "temp": temp
+                        }
+                    else:
+                        self.db.update_ctc_status(new_city, 0.0, False)
+                        return {"status": "ERROR", "city": new_city, "temp": None}
+                    
+                else:
+                    return {"status": "ERROR", "city": new_city, "temp": None}
+            
+            else:
+                return {"status": "ERROR", "city": new_city, "temp": None}
+        except Exception as e:
+            self.logger.error(f"Error cambiando ciudad: {e}")
+            return {"status": "ERROR", "city": new_city, "temp": None}
 
 def main():
     parser = argparse.ArgumentParser(description='EasyCab Central Server')

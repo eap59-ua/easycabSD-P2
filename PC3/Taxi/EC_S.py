@@ -52,11 +52,27 @@ class Sensors:
                     self.connect_to_de()
             time.sleep(1)
             
+    def send_final_status(self):
+        """Enviar el estado final antes de cerrar la conexión"""
+        if self.connected:
+            try:
+                message = json.dumps({
+                    "type": "sensor_status",
+                    "status": self.status,
+                    "timestamp": time.time()
+                })
+                self.socket.sendall(message.encode())
+                self.logger.info(f"Estado final enviado: {self.status}")
+            except Exception as e:
+                self.logger.error(f"Error enviando estado final: {e}")
+
     def handle_user_input(self):
         """Manejar entrada del usuario para cambiar estado"""
         while self.running:
             command = input("Presiona ENTER para cambiar el estado del sensor (o 'q' para salir): ")
             if command.lower() == 'q':
+                self.status = "KO"
+                self.send_final_status()
                 self.running = False
                 break
             self.status = "KO" if self.status == "OK" else "OK"
@@ -79,6 +95,10 @@ class Sensors:
         finally:
             self.running = False
             if self.socket:
+                try:
+                    self.socket.close()
+                except:
+                    pass
                 self.socket.close()
 
 def main():
