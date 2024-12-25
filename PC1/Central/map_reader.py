@@ -170,7 +170,23 @@ class DatabaseManager:
                 taxis = cursor.fetchall()
                 self.logger.debug(f"Estados de taxis: {[{'id': t['id'], 'estado': t['estado']} for t in taxis]}")
                 return taxis
-
+    def obtener_taxis_para_front(self):
+        """Obtener todos los taxis con sus estados y tokens para el front"""
+        with self.get_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT t.id, t.estado, t.esta_parado, t.coord_x, t.coord_y,
+                        t.dest_x, t.dest_y, t.cliente_asignado,
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM taxi_tokens tt 
+                            WHERE tt.taxi_id = t.id 
+                            AND NOT tt.expired
+                        ) THEN true ELSE false END as has_token
+                    FROM taxis t
+                    WHERE t.estado != 'no_disponible'
+                    ORDER BY t.id;
+                """)
+                return cursor.fetchall()
     def obtener_locations(self):
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=DictCursor) as cursor:

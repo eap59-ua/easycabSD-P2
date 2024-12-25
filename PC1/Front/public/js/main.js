@@ -1,15 +1,17 @@
 // Funciones de fetch
 async function fetchStatus() {
-    const response = await fetch('/api/map-status');
-    return response.json();
+    try {
+        const response = await fetch('http://localhost:5005/state');
+        const data = await response.json();
+        console.log("Datos recibidos:", data); // Para debug
+        return data;
+    } catch (error) {
+        console.error("Error fetching status:", error);
+        throw error;
+    }
 }
 
-async function fetchTraffic() {
-    const response = await fetch('/api/traffic');
-    return response.json();
-}
-
-// Sistema de alertas
+// Sistema de alertas mejorado
 class AlertSystem {
     constructor() {
         this.container = document.getElementById('alerts-container');
@@ -17,16 +19,23 @@ class AlertSystem {
     }
 
     addAlert(message, type = 'info', timeout = 5000) {
-        const alertId = Date.now();
+        const alertId = `${type}-${message}`;
+        if (this.alerts.has(alertId)) return;
+        
+        this.alerts.add(alertId);
         const alert = document.createElement('div');
         alert.className = `alert ${type}`;
         alert.innerHTML = `
             <span>${message}</span>
             <button onclick="this.parentElement.remove()">×</button>
         `;
+        
         this.container.prepend(alert);
         
-        setTimeout(() => alert.remove(), timeout);
+        setTimeout(() => {
+            alert.remove();
+            this.alerts.delete(alertId);
+        }, timeout);
     }
 }
 
@@ -35,82 +44,93 @@ const alertSystem = new AlertSystem();
 // Función principal de actualización
 async function updateSystem() {
     try {
-        const [data, trafficData] = await Promise.all([
-            fetchStatus(),
-            fetchTraffic()
-        ]);
-
-        drawMap(data);
-        updateStatusPanel(data);
-        updateTrafficStatus(trafficData.status);
-        updateTaxiList(data.taxis);
-        updateClientList(data.clients);
+        const data = await fetchStatus();
+        console.log("Actualizando sistema con datos:", data);
         
+        // Dibujar el mapa
+        drawMap(data);
+        
+        // Actualizar tablas
+        updateTables(data);
+
+        // Actualizar estado del tráfico
+        updateTrafficStatus(data.traffic);
+
     } catch (error) {
         console.error('Error updating system:', error);
         alertSystem.addAlert('Error actualizando el sistema', 'error');
     }
 }
 
-function updateStatusPanel(data) {
+// Función para actualizar estado del tráfico
+function updateTrafficStatus(trafficData) {
     const trafficStatus = document.getElementById('traffic-status');
-    if (data.ctc_status) {
-        const isOk = data.ctc_status === 'OK';
-        trafficStatus.innerHTML = `
-            <span class="status-dot ${isOk ? 'green' : 'red'}"></span>
-            ${isOk ? 'Tráfico Normal' : 'Tráfico Interrumpido'}
-        `;
-        if (data.temperature) {
-            document.getElementById('temperature').textContent = 
-                `Temperatura: ${data.temperature}°C`;
-        }
+    if (!trafficStatus) return;
+
+    const isOk = trafficData.status === 'OK';
+    trafficStatus.innerHTML = `
+        <span class="status-dot ${isOk ? 'green' : 'red'}"></span>
+        ${isOk ? 'Tráfico Normal' : 'Tráfico Interrumpido'}
+    `;
+}
+
+// Función para actualizar las tablas
+function updateTables(data) {
+    console.log("Actualizando tablas con:", data);
+    
+    // Actualizar tabla de taxis
+    const taxiTbody = document.getElementById('taxi-tbody');
+    if (taxiTbody) {
+        taxiTbody.innerHTML = '';
+        data.taxis?.forEach(taxi => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${taxi.id}</td>
+                <td class="${taxi.esta_parado ? 'status-stopped' : 'status-moving'}">
+                    ${getStatusEmoji(taxi.estado)} ${taxi.estado}
+                </td>
+                <td>${taxi.cliente_asignado || '-'}</td>
+                <td>${taxi.has_token ? '✅' : '❌'}</td>
+            `;
+            taxiTbody.appendChild(row);
+        });
+    }
+    
+    // Actualizar tabla de clientes
+    const clientTbody = document.getElementById('client-tbody');
+    if (clientTbody) {
+        clientTbody.innerHTML = '';
+        data.clients?.forEach(client => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${client.id}</td>
+                <td class="status-${client.status}">
+                    ${getClientStatusEmoji(client.status)} ${client.status}
+                </td>
+                <td>${client.destination_id || '-'}</td>
+            `;
+            clientTbody.appendChild(row);
+        });
     }
 }
 
-function updateTaxiList(taxis) {
-    const tbody = document.getElementById('taxi-tbody');
-    tbody.innerHTML = '';
-    
-    taxis.forEach(taxi => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${taxi.id}</td>
-            <td class="status ${taxi.estado === 'disponible' ? 'available' : ''}">
-                ${getStatusEmoji(taxi.estado)} ${taxi.estado}
-            </td>
-            <td>${taxi.cliente_asignado || '-'}</td>
-            <td>${taxi.token ? '✓' : '✗'}</td>
-        `;
-        tbody.appendChild(row);
-    });
-}
-
-function updateClientList(clients) {
-    const tbody = document.getElementById('client-tbody');
-    tbody.innerHTML = '';
-    
-    clients.forEach(client => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${client.id}</td>
-            <td>${client.status}</td>
-            <td>${client.destination_id || '-'}</td>
-        `;
-        tbody.appendChild(row);
-    });
-}
-
 function getStatusEmoji(status) {
-    const emojis = {
+    return {
         'disponible': '🟢',
         'en_movimiento': '🚕',
-        'no_disponible': '🔴'
-    };
-    return emojis[status] || '⚪';
+        'no_disponible': '⚫️'
+    }[status] || '⚪️';
 }
 
-// Tu función drawMap modificada para incluir índices
-// main.js
+function getClientStatusEmoji(status) {
+    return {
+        'waiting': '⌛️',
+        'picked_up': '🚖',
+        'finished': '✅'
+    }[status] || '⚪️';
+}
+
+// Función para dibujar el mapa
 async function drawMap(data) {
     console.log('Drawing map with data:', data);
     const mapContainer = document.getElementById('map-container');
@@ -121,12 +141,6 @@ async function drawMap(data) {
     
     mapContainer.innerHTML = '';
     const size = 20;
-
-    // Debug logs
-    console.log('Grid size:', size);
-    console.log('Taxis:', data.taxis);
-    console.log('Clients:', data.clients);
-    console.log('Locations:', data.locations);
 
     // Configurar grid
     mapContainer.style.gridTemplateColumns = `35px repeat(${size}, 35px)`;
@@ -185,54 +199,13 @@ function createCell(content, isHeader = false) {
         cell.style.fontWeight = 'bold';
     }
     
+    cell.style.transition = 'all 0.1s linear';
     cell.textContent = content;
     return cell;
 }
 
-// Evento para cambiar ciudad
-document.getElementById('changeCityBtn').addEventListener('click', async () => {
-    const city = document.getElementById('cityInput').value;
-    if (!city) {
-        alertSystem.addAlert('Por favor, introduce una ciudad', 'warning');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/city', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({city})
-        });
-        const data = await response.json();
-        
-        if (data.status === 'OK') {
-            alertSystem.addAlert(`Ciudad cambiada a ${city}`, 'info');
-            document.getElementById('cityInput').value = '';
-        } else {
-            alertSystem.addAlert('Error cambiando la ciudad', 'error');
-        }
-    } catch (error) {
-        console.error('Error changing city:', error);
-        alertSystem.addAlert('Error en la conexión', 'error');
-    }
+// Iniciar actualizaciones cuando se carga la página
+document.addEventListener('DOMContentLoaded', () => {
+    updateSystem();
+    setInterval(updateSystem, 50);
 });
-
-// Añadir algunos estilos dinámicos
-const style = document.createElement('style');
-style.textContent = `
-    .status-dot {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        margin-right: 5px;
-    }
-    .status-dot.green { background-color: #52c41a; }
-    .status-dot.red { background-color: #f5222d; }
-    .status.available { color: #52c41a; }
-`;
-document.head.appendChild(style);
-
-// Iniciar el sistema de actualización
-setInterval(updateSystem, 3000);
-updateSystem();

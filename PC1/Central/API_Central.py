@@ -2,8 +2,8 @@ from flask import Flask, jsonify
 from map_reader import DatabaseManager, get_db_params
 import logging
 from flask_cors import CORS
-
-
+import requests
+import time
 app = Flask(__name__)
 CORS(app)
 # Inicializar conexión a BD
@@ -20,27 +20,37 @@ logger.addHandler(handler)
 
 @app.route("/state", methods=["GET"])
 def get_state():
-    """
-    Devuelve el estado actual del sistema:
-    - Lista de taxis con su posición, estado y cliente asignado
-    - Lista de clientes con su estado y posición
-    - Lista de locations disponibles en el mapa
-    """
     try:
-        taxis = db.obtener_taxis()       #Lista de diccionarios: [{id, estado, coord_x, coord_y, ...}, ...]
-        clientes = db.obtener_clientes() #Lista de diccionarios: [{id, status, coord_x, coord_y, destination_id}, ...]
-        locations = db.obtener_locations() #Lista de diccionarios: [{id, coord_x, coord_y}, ...]
-
-        # Convertir a listas "serializables"
-        taxis_list = [dict(t) for t in taxis] if taxis else []
+        # Obtener datos básicos
+        taxis = db.obtener_taxis_para_front()
+        taxis_list = [dict(t) for t in taxis if t['estado'] != 'no_disponible'] if taxis else []
+        
+        # Obtener datos de clientes
+        clientes = db.obtener_clientes()
         clients_list = [dict(c) for c in clientes] if clientes else []
+        
+        # Obtener locations
+        locations = db.obtener_locations()
         locations_list = [dict(l) for l in locations] if locations else []
+        
+        # Obtener datos de tráfico con mejor manejo de errores
+        traffic_status = "KO"
+        try:
+            traffic_response = requests.get("http://localhost:5002/traffic", timeout=2)
+            if traffic_response.status_code == 200:
+                traffic_status = traffic_response.text.strip()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Error consultando tráfico: {e}")
 
+        # Construir respuesta completa
         response = {
             "taxis": taxis_list,
             "clients": clients_list,
             "locations": locations_list,
-            "message": "Estado del sistema devuelto correctamente."
+            "traffic": {
+                "status": traffic_status
+            },
+            "timestamp": time.time()
         }
         return jsonify(response), 200
     except Exception as e:
