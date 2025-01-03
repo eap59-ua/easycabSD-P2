@@ -340,6 +340,20 @@ class CentralSystem:
                     
             except Exception as e:
                 self.logger.error(f"Error en conexión SSL: {e}", exc_info=True)
+    
+    def log_audit_event(self, event_type, action, details, source_id=None):
+        """Registrar evento de auditoría"""
+        try:
+            self.db.log_audit_event(
+                source="CENTRAL",
+                source_id=source_id,
+                ip_address=self.get_local_ip(),
+                event_type=event_type,
+                action=action,
+                details=details
+            )
+        except Exception as e:
+            self.logger.error(f"Error registrando evento de auditoría: {e}")
     def handle_taxi_auth(self, message):
         """Manejar autenticación de taxi"""
         taxi_id = message.get('taxi_id')
@@ -388,19 +402,47 @@ class CentralSystem:
                     self.producer.send('customer_responses', value=response)
                     
                 del self.disconnected_taxis[taxi_id]
-                return {'status': 'OK', 'restore': True, 'token': self.generate_token(taxi_id)}                
+                # para auditoria
+                self.log_audit_event(
+                    event_type="auth",
+                    action="TAXI_RECONNECT_SUCCESS",
+                    details=f"Taxi {taxi_id} reconectado correctamente",
+                    source_id=str(taxi_id)
+                )
+                return {'status': 'OK', 'restore': True, 'token': self.generate_token(taxi_id)}  
+
             # Si no es reconexión
             if self.db.verificar_taxi(taxi_id):
                 # Aquí sí podemos usar posición inicial [1,1] porque es nueva autenticación
                 self.db.actualizar_taxi_autenticado(taxi_id, 1, 1)
                 token = self.generate_token(taxi_id)
+                # Registrar evento de autenticación exitosa
+                self.log_audit_event(
+                    event_type="auth",
+                    action="TAXI_AUTH_SUCCESS",
+                    details=f"Nueva autenticación exitosa del taxi {taxi_id}",
+                    source_id=str(taxi_id)
+                )
                 self.logger.info(f"Nueva autenticación exitosa del taxi {taxi_id}")
+                
                 return {'status': 'OK', 'restore': False, 'token': token}
             else:
+                self.log_audit_event(
+                    event_type="auth",
+                    action="TAXI_AUTH_FAILED",
+                    details=f"Autenticación fallida para taxi {taxi_id} - Taxi no verificado",
+                    source_id=str(taxi_id)
+                )
                 self.logger.warning(f"Autenticación fallida para taxi {taxi_id}")
                 return {'status': 'ERROR'}
             
         except Exception as e:
+            self.log_audit_event(
+                event_type="error",
+                action="TAXI_AUTH_ERROR",
+                details=f"Error en autenticación del taxi {taxi_id}: {str(e)}",
+                source_id=str(taxi_id)
+            )
             self.logger.error(f"Error en autenticación del taxi {taxi_id}: {e}")
             return {'status': 'ERROR'}
         

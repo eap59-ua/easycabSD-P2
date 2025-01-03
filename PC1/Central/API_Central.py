@@ -20,6 +20,60 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
+# En API_Central.py
+
+# Nuevo endpoint para obtener logs de auditoría
+@app.route("/audit", methods=["GET"])
+def get_audit_logs():
+    try:
+        print("=== Audit Request Received ===")
+        print(f"Request Args: {request.args}")
+        
+        # Obtener parámetros de filtrado
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 10))
+        event_type = request.args.get('eventType')
+        source = request.args.get('source')
+        date = request.args.get('date')
+
+        print(f"Processed params: page={page}, limit={limit}, event_type={event_type}, source={source}, date={date}")
+
+        # Calcular offset para paginación
+        offset = (page - 1) * limit
+
+        # Obtener logs de la BD con filtros
+        logs = db.get_audit_logs(
+            event_type=event_type,
+            source=source,
+            date=date,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Obtener total de registros para paginación
+        total = db.get_audit_logs_count(
+            event_type=event_type,
+            source=source,
+            date=date
+        )
+
+        print(f"Found {total} logs, returning {len(logs)} for current page")
+
+        response_data = {
+            "logs": logs,
+            "total": total,
+            "page": page,
+            "pages": (total + limit - 1) // limit
+        }
+        
+        print("Sending response")
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        print(f"Error in get_audit_logs: {str(e)}")
+        logger.error(f"Error obteniendo logs de auditoría: {e}")
+        return jsonify({"error": str(e)}), 500
+    
 @app.route("/state", methods=["GET"])
 def get_state():
     try:

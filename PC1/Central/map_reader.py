@@ -25,7 +25,72 @@ class DatabaseManager:
         
     def get_connection(self):
         return psycopg2.connect(**self.db_params)
-    
+    # En map_reader.py
+
+    def get_audit_logs(self, event_type=None, source=None, date=None, limit=10, offset=0):
+        """Obtener logs de auditoría con filtros"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor(cursor_factory=DictCursor) as cursor:
+                    query = """
+                        SELECT id, timestamp, source, source_id, ip_address, 
+                            event_type, action, details 
+                        FROM audit_log 
+                        WHERE 1=1
+                    """
+                    params = []
+
+                    # Aplicar filtros
+                    if event_type:
+                        query += " AND event_type = %s"
+                        params.append(event_type)
+                    
+                    if source:
+                        query += " AND source = %s"
+                        params.append(source)
+                    
+                    if date:
+                        query += " AND DATE(timestamp) = %s"
+                        params.append(date)
+
+                    # Ordenar y paginar
+                    query += " ORDER BY timestamp DESC LIMIT %s OFFSET %s"
+                    params.extend([limit, offset])
+
+                    cursor.execute(query, params)
+                    return [dict(row) for row in cursor.fetchall()]
+
+        except Exception as e:
+            self.logger.error(f"Error obteniendo logs de auditoría: {e}")
+            raise
+
+    def get_audit_logs_count(self, event_type=None, source=None, date=None):
+        """Obtener total de logs para paginación"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    query = "SELECT COUNT(*) FROM audit_log WHERE 1=1"
+                    params = []
+
+                    if event_type:
+                        query += " AND event_type = %s"
+                        params.append(event_type)
+                    
+                    if source:
+                        query += " AND source = %s"
+                        params.append(source)
+                    
+                    if date:
+                        query += " AND DATE(timestamp) = %s"
+                        params.append(date)
+
+                    cursor.execute(query, params)
+                    return cursor.fetchone()[0]
+
+        except Exception as e:
+            self.logger.error(f"Error contando logs de auditoría: {e}")
+            raise
+
     # En DatabaseManager (map_reader.py)
     def verify_taxi_cert_token(self, taxi_id, cert_token):
         """Verificar token de certificación del taxi"""

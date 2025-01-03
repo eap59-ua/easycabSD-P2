@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EasyCab - Sistema de Auditoría</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/css/audit.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <h1>EasyCab - Sistema de Auditoría</h1>
+            <a href="/" class="back-button">← Volver al Monitor</a>
+        </div>
+    </header>
+
+    <div class="audit-container">
+        <!-- Filtros -->
+        <div class="filters-section">
+            <h3>Filtros</h3>
+            <div class="filter-controls">
+                <div class="filter-group">
+                    <label>Tipo de Evento:</label>
+                    <select id="eventTypeFilter">
+                        <option value="">Todos</option>
+                        <option value="auth">Autenticación</option>
+                        <option value="traffic">Tráfico</option>
+                        <option value="error">Errores</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Fuente:</label>
+                    <select id="sourceFilter">
+                        <option value="">Todas</option>
+                        <option value="taxi">Taxis</option>
+                        <option value="central">Central</option>
+                        <option value="ctc">CTC</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Fecha:</label>
+                    <input type="date" id="dateFilter">
+                </div>
+                <button id="applyFilters">Aplicar Filtros</button>
+            </div>
+        </div>
+
+        <!-- Tabla de Auditoría -->
+        <div class="audit-table-container">
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Fecha/Hora</th>
+                        <th>Fuente</th>
+                        <th>IP</th>
+                        <th>Tipo de Evento</th>
+                        <th>Acción</th>
+                        <th>Detalles</th>
+                    </tr>
+                </thead>
+                <tbody id="auditTableBody">
+                    <!-- Los datos se cargarán dinámicamente -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Paginación -->
+        <div class="pagination">
+            <button id="prevPage">Anterior</button>
+            <span id="pageInfo">Página 1 de 1</span>
+            <button id="nextPage">Siguiente</button>
+        </div>
+    </div>
+
+    <script src="/js/audit.js"></script>
+</body>
+</html>
